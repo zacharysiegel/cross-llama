@@ -10,15 +10,32 @@ extern "C" {
     /// A wllama instance, which runs at most one model.
     pub type Wllama;
 
+    /// Keeps model files in wllama's cache in the browser's storage.
+    pub type ModelManager;
+
     /// A model's files in wllama's cache.
     pub type WllamaModelFiles;
+
+    #[wasm_bindgen(method, getter, js_name = modelManager)]
+    pub fn model_manager(this: &Wllama) -> ModelManager;
 
     #[wasm_bindgen(js_name = createWllama)]
     pub fn create_wllama(wllama_directory_url: &str) -> Promise;
 
+    #[wasm_bindgen(js_name = createModelManager)]
+    pub fn create_model_manager(wllama_directory_url: &str) -> Promise;
+
     /// Calls `on_progress` with the bytes downloaded and the total, which is zero when the server does not give it.
     #[wasm_bindgen(js_name = downloadModel)]
-    pub fn download_model(wllama: &Wllama, model_url: &str, abort_signal: &AbortSignal, on_progress: &Function) -> Promise;
+    pub fn download_model(model_manager: &ModelManager, model_url: &str, abort_signal: &AbortSignal, on_progress: &Function) -> Promise;
+
+    /// Resolves to a boolean.
+    #[wasm_bindgen(js_name = isModelDownloaded)]
+    pub fn is_model_downloaded(model_manager: &ModelManager, model_url: &str) -> Promise;
+
+    /// Resolves once the lock is held; aborting `abort_signal` releases it.
+    #[wasm_bindgen(js_name = acquireModelLock)]
+    pub fn acquire_model_lock(model_url: &str, abort_signal: &AbortSignal) -> Promise;
 
     /// Resolves to a `Uint8Array`, shorter than `byte_count` when the file is.
     #[wasm_bindgen(js_name = readModelPrefix)]
