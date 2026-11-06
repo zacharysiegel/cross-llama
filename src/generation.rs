@@ -25,7 +25,7 @@ pub struct ChatMessage {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct GenerationRequest {
-    /// Formatted by the model's own chat template.
+    /// Formatted by the model's own chat template; a message whose text contains one of the model's control tokens is rejected.
     pub messages: Vec<ChatMessage>,
     pub json_schema: Option<serde_json::Value>,
     /// Zero or below always picks the most likely token, which makes `seed` irrelevant.
