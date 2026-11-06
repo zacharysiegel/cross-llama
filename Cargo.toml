@@ -2,6 +2,12 @@
 name = "cross-llama"
 version = "0.1.0"
 edition = "2024"
+description = "Runs a GGUF language model from Rust behind one async API: llama.cpp on targets other than wasm32, wllama in the browser"
+license = "MIT"
+repository = "https://github.com/zacharysiegel/cross-llama"
+readme = "README.md"
+keywords = ["llm", "llama", "gguf", "wasm", "inference"]
+categories = ["api-bindings", "wasm"]
 
 [features]
 cuda = ["llama-cpp-2/cuda"]
