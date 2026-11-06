@@ -292,11 +292,19 @@ fn create_request_json(request: &GenerationRequest) -> String {
             })
         })
         .collect();
+    // Turns off every sampler but temperature, which the server and the model's metadata would otherwise enable.
     let mut request_json: serde_json::Value = serde_json::json!({
         "messages": messages,
         "temperature": request.temperature,
         "seed": request.seed,
         "max_tokens": request.maximum_token_count,
+        "top_k": 0,
+        "top_p": 1.0,
+        "min_p": 0.0,
+        "typical_p": 1.0,
+        "xtc_probability": 0.0,
+        "repeat_penalty": 1.0,
+        "mirostat": 0,
     });
 
     if let Some(json_schema) = &request.json_schema {

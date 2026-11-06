@@ -70,6 +70,7 @@ Each backend is a module selected by `#[cfg]`, re-exported as the same public ty
   - The design planned `loadModelFromUrl`, which does both steps at once; splitting them separates `Downloading` from `Loading` and lets the backend read the vocabulary between them.
 - Control tokens: wllama does not expose its tokenizer, so the backend reads the token texts and types from the GGUF file's metadata in wllama's cache and rejects a message containing the text of a control, unknown or end-of-generation token. This matches the tokens llama.cpp parses as special in a templated prompt.
 - Generation: `createChatCompletion` with `response_format` set to the JSON schema; wllama reuses the cached prompt prefix itself.
+  - The request turns off the samplers the llama.cpp server enables by default or takes from the model's metadata (`top_k`, `top_p`, `min_p` and others), so both backends sample from the whole distribution after temperature.
 - Progress: `stream` with `onData`, `return_progress` and `timings_per_token`; each chunk carries either `prompt_progress` (`total`, `cache`, `processed`) or the next piece of the reply, with the timings so far.
   - `ReadingPrompt` comes after each batch wllama reads, starting with one whose read count is the reused count.
   - `Generating` comes with each piece of reply text; a token with no text of its own, such as whitespace the server holds back, reports nothing, so the counts can skip.
