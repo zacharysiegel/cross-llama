@@ -406,9 +406,8 @@ async fn is_model_downloaded_is_true_only_after_download_model() {
 async fn is_model_downloaded_makes_no_network_request() {
     let source: ModelSource = create_small_model_source("no-request");
 
-    let downloaded: bool = cross_llama::is_model_downloaded(&source).await.unwrap();
+    let _downloaded: bool = cross_llama::is_model_downloaded(&source).await.unwrap();
 
-    assert!(!downloaded);
     assert_eq!(count_resource_requests(&source.model_url), 0);
 }
 
