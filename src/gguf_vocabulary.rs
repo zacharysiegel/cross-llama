@@ -264,7 +264,7 @@ mod tests {
     use std::fs::File;
     use std::io::Read;
 
-    use crate::gguf_vocabulary::VocabularyRead;
+    use crate::gguf_vocabulary::{GgufVocabulary, VocabularyRead};
     use crate::{gguf_vocabulary, test_model};
 
     const TEST_MODEL_PREFIX_BYTE_COUNT: u64 = 16 * 1024 * 1024;
@@ -275,20 +275,36 @@ mod tests {
         prefix
     }
 
-    #[test]
-    fn control_token_texts_include_turn_markers_but_not_ordinary_words() {
+    fn read_test_model_vocabulary() -> GgufVocabulary {
         let prefix: Vec<u8> = read_test_model_prefix(TEST_MODEL_PREFIX_BYTE_COUNT);
-
         let vocabulary_read: VocabularyRead = gguf_vocabulary::read_vocabulary(&prefix).unwrap();
+
         let VocabularyRead::Complete(vocabulary) = vocabulary_read
         else {
             panic!("the vocabulary continues past the prefix");
         };
+
+        vocabulary
+    }
+
+    #[test]
+    fn control_token_texts_include_turn_markers_but_not_ordinary_words() {
+        let vocabulary: GgufVocabulary = read_test_model_vocabulary();
+
         let control_token_texts: Vec<String> = vocabulary.control_token_texts(&[]);
 
         assert!(control_token_texts.iter().any(|text| text == "<start_of_turn>"));
         assert!(control_token_texts.iter().any(|text| text == "<end_of_turn>"));
         assert!(!control_token_texts.iter().any(|text| text == "hello"));
+    }
+
+    #[test]
+    fn token_text_reads_text_by_token_id() {
+        let vocabulary: GgufVocabulary = read_test_model_vocabulary();
+
+        // gemma-3's beginning-of-sequence token.
+        assert_eq!(vocabulary.token_text(2), Some("<bos>"));
+        assert_eq!(vocabulary.token_text(u32::MAX), None);
     }
 
     #[test]
