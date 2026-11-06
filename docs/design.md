@@ -32,7 +32,7 @@ model.unload().await?;
   - `Generating`: tokens generated so far, the request's maximum, and the reply text so far
 - `generate` returns `GenerationError::Cancelled` or `GenerationError::Failed(Error)`, so a caller can tell a cancellation from a failure.
   - A reply that reaches the maximum tokens unfinished is a failure when a schema is set, because its JSON is incomplete; without a schema it returns the text so far.
-    - Both backends share the check: a schema reply at the maximum fails unless it parses as JSON. The llama.cpp server inside wllama stops at the maximum without sampling the end token, and its JSON grammar allows trailing whitespace, so a complete reply can still reach the maximum.
+    - Both backends share the check: a schema reply at the maximum fails unless it parses as JSON, and a top-level number also needs whitespace after it, since a cut-off number still parses. The llama.cpp server inside wllama stops at the maximum without sampling the end token, and its JSON grammar allows trailing whitespace, so a complete reply can still reach the maximum.
   - A request whose prompt plus maximum reply does not fit in the context fails before reading the prompt.
     - wllama does not expose its tokenizer, so the browser backend checks on wllama's first prompt progress report, which comes before it reads the prompt.
 - `cancel` stops the generation in progress and any queued before the call; dropping a `generate` future also stops its generation.
