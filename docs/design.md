@@ -61,6 +61,8 @@ Each backend is a module selected by `#[cfg]`, re-exported as the same public ty
 ## Assets the app serves in the browser
 
 - wllama's JavaScript and WebAssembly files, default and compatibility builds, at paths the app passes in `LoadOptions`.
+  - `scripts/fetch-wllama.sh <directory>` writes them, from the pinned npm release, after checking each package against its published integrity hash; the app runs it as part of its build and serves the directory.
+  - They are not committed to this repository, and the crate's build script does not download them: a build script writes only to Cargo's output directory, which the app does not serve, and downloading there would break offline builds.
 - The model file, at the URL in `ModelSource`.
 - Cross-origin isolation headers (`Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy`), which wllama's multithreaded build needs.
 
@@ -76,7 +78,7 @@ Each backend is a module selected by `#[cfg]`, re-exported as the same public ty
 - Streaming tokens as they are generated.
 - Images, audio, embeddings and tool calls.
 
-## Open questions
+## Platforms
 
-- How the browser side ships wllama's files: copied from its npm package into this repository, or fetched at build time by a script.
-- Whether the native side should be tested for iOS and Android from macOS, which needs those targets in `rust-toolchain.toml`.
+- The browser backend serves the language app's grading, which runs only on the web.
+- The llama.cpp backend covers desktop operating systems and the crate's own fast tests. llama.cpp also builds for iOS and Android, but no phone-sized model passed the grading bar, so neither is a target for now.
