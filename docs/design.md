@@ -62,7 +62,7 @@ Tokens, batches, samplers and the cache stay inside the crate. A caller that lat
 - Rendering follows Hugging Face's transformers and llama.cpp's server: `trim_blocks` and `lstrip_blocks`, Python's string and dictionary methods (minijinja-contrib's `pycompat`), `raise_exception`, and the variables `messages`, `add_generation_prompt`, `bos_token`, `eos_token` and `enable_thinking`.
 - `enable_thinking` is false, so a reasoning model's prompt closes its thinking block itself and the reply holds only the answer.
 - A sequence token the template writes and tokenizing also adds is removed from the rendered prompt, as llama.cpp's server does.
-- llama.cpp's built-in templates detect known templates by their text and missed gemma4's; for gemma-3-270m the rendered prompt matches the built-in one exactly.
+- llama.cpp's built-in templates detect known templates by their text and missed gemma4's.
 - When a template rejects or drops a system message (gemma-2, Mistral v0.x), checked once when the template is read, a leading system message's text joins the next message after a newline, as llama.cpp's server does.
 
 ## Backends
@@ -111,7 +111,7 @@ Each backend is a module selected by `#[cfg]`, re-exported as the same public ty
   - Chrome, default build: 124 tokens/s reading the prompt, 27 generating; p95 3.0 s per graded answer with prefix reuse.
   - Safari, compatibility build: 26 tokens/s reading, 16 generating.
 - Measured on an M4 Max with gemma4 12B QAT, Chrome, default build, twelve grader cases: 20 tokens/s generating, median 3.3 s per graded answer with prefix reuse; replies and token counts identical to the llama.cpp backend's.
-- The 7.3 GB model loads into GPU memory, not WebAssembly memory, so the compatibility build's 4 GB WebAssembly limit does not stop it.
+- gemma3 12B Q4_K_M (7.3 GB) loads into GPU memory, not WebAssembly memory, so the compatibility build's 4 GB WebAssembly limit does not stop it.
 
 ## Assets the app serves in the browser
 
@@ -135,7 +135,7 @@ Each backend is a module selected by `#[cfg]`, re-exported as the same public ty
   - The script sets `NO_PROXY` for the loopback addresses, since an HTTP proxy in the environment otherwise receives the runner's requests to the WebDriver.
 - Shared request and fixture helpers for both backends' tests live in `tests/helpers/`.
 
-## Out of scope for the first version
+## Out of scope
 
 - Downloading or managing model files on targets other than `wasm32`; the app supplies the path.
 - Images, audio, embeddings and tool calls.
