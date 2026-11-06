@@ -222,8 +222,11 @@ impl<'model> GenerationSession<'model> {
         monitor.check_cancellation()?;
 
         let prompt_tokens: Vec<LlamaToken> = self.tokenize_prompt(&request.messages)?;
+
         self.check_context_capacity(prompt_tokens.len(), request.maximum_token_count)?;
+
         let mut sampler: LlamaSampler = self.create_sampler(request)?;
+
         let reused_token_count: usize = self.prompt_cache.keep_reusable_prefix(&mut self.context, &prompt_tokens)?;
 
         let prompt_reading_started_at: Instant = Instant::now();
