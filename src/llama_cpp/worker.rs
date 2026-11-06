@@ -250,6 +250,8 @@ impl<'model> GenerationSession<'model> {
     }
 
     fn tokenize_prompt(&self, messages: &[ChatMessage]) -> Result<Vec<LlamaToken>, Error> {
+        self.check_no_control_token_text(messages)?;
+
         let chat_messages: Vec<LlamaChatMessage> = messages
             .iter()
             .map(create_llama_chat_message)
@@ -262,6 +264,22 @@ impl<'model> GenerationSession<'model> {
         }
 
         Ok(prompt_tokens)
+    }
+
+    /// The templated prompt is tokenized with its control tokens parsed, so control-token text in a message would forge turns.
+    fn check_no_control_token_text(&self, messages: &[ChatMessage]) -> Result<(), Error> {
+        let vocabulary: LlamaVocab = self.model.vocab();
+
+        for message in messages {
+            let literal_tokens: Vec<LlamaToken> = vocabulary.tokenize(message.text.as_bytes(), false, false);
+            let control_parsed_tokens: Vec<LlamaToken> = vocabulary.tokenize(message.text.as_bytes(), false, true);
+
+            if literal_tokens != control_parsed_tokens {
+                return Err(Error::new("a message's text contains one of the model's control tokens"));
+            }
+        }
+
+        Ok(())
     }
 
     fn check_context_capacity(&self, prompt_token_count: usize, maximum_token_count: usize) -> Result<(), Error> {
