@@ -2,7 +2,6 @@
 name = "cross-llama"
 version = "0.1.0"
 edition = "2024"
-publish = false
 
 [features]
 cuda = ["llama-cpp-2/cuda"]
