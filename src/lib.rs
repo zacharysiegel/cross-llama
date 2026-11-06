@@ -2,6 +2,7 @@
 
 mod error;
 mod generation;
+mod generation_checks;
 // llama-cpp-sys-2 compiles llama.cpp with CMake and a native C++ compiler, which cannot target wasm32.
 #[cfg(not(target_arch = "wasm32"))]
 mod llama_cpp;
