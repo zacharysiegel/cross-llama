@@ -1,4 +1,4 @@
-use js_sys::{Function, Promise};
+use js_sys::{Array, Function, Promise};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::AbortSignal;
@@ -33,9 +33,10 @@ extern "C" {
     #[wasm_bindgen(js_name = isModelDownloaded)]
     pub fn is_model_downloaded(model_manager: &ModelManager, model_url: &str) -> Promise;
 
-    /// Resolves once the lock is held; aborting `abort_signal` releases it.
+    /// Resolves once the lock is held; aborting `abort_signal` releases it once every promise in `held_operations` has
+    /// settled.
     #[wasm_bindgen(js_name = acquireModelLock)]
-    pub fn acquire_model_lock(model_url: &str, abort_signal: &AbortSignal) -> Promise;
+    pub fn acquire_model_lock(model_url: &str, abort_signal: &AbortSignal, held_operations: &Array) -> Promise;
 
     /// Resolves to a `Uint8Array`, shorter than `byte_count` when the file is.
     #[wasm_bindgen(js_name = readModelPrefix)]

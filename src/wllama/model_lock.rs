@@ -1,3 +1,4 @@
+use js_sys::{Array, Promise};
 use web_sys::AbortController;
 
 use crate::Error;
@@ -9,6 +10,8 @@ pub struct ModelLock {
     model_url: String,
     // Aborting abandons a pending request or releases a held lock.
     abort_controller: AbortController,
+    // Promises the release waits for.
+    held_operations: Array,
 }
 
 impl ModelLock {
@@ -18,14 +21,22 @@ impl ModelLock {
         let model_lock: ModelLock = ModelLock {
             model_url: model_url.to_string(),
             abort_controller,
+            held_operations: Array::new(),
         };
 
-        wllama_bridge::settle(wllama_bridge::acquire_model_lock(model_url, &model_lock.abort_controller.signal())).await?;
+        let lock_request: Promise = wllama_bridge::acquire_model_lock(model_url, &model_lock.abort_controller.signal(), &model_lock.held_operations);
+        wllama_bridge::settle(lock_request).await?;
+
         Ok(model_lock)
     }
 
     pub fn model_url(&self) -> &str {
         &self.model_url
+    }
+
+    /// Keeps the lock held, after a release or a drop, until `operation` settles.
+    pub fn hold_until_settled(&self, operation: &Promise) {
+        self.held_operations.push(operation);
     }
 
     pub fn release(self) {
@@ -36,5 +47,40 @@ impl ModelLock {
 impl Drop for ModelLock {
     fn drop(&mut self) {
         self.abort_controller.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use futures::future;
+    use futures::future::Either;
+    use wasm_bindgen_futures::JsFuture;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    use crate::Error;
+    use crate::wllama::model_lock::ModelLock;
+    use crate::wllama::test_sleep;
+
+    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
+    const HELD_OPERATION_MILLISECONDS: u32 = 1000;
+    const LOCK_WAIT_MILLISECONDS: u32 = 500;
+
+    #[wasm_bindgen_test]
+    async fn release_keeps_lock_until_held_operation_settles() {
+        let model_url: String = format!("/held-operation-{}.gguf", js_sys::Date::now());
+        let model_lock: ModelLock = ModelLock::acquire(&model_url).await.unwrap();
+
+        model_lock.hold_until_settled(&test_sleep::sleep(HELD_OPERATION_MILLISECONDS));
+        model_lock.release();
+        let next_acquire = Box::pin(ModelLock::acquire(&model_url));
+        let first_finished = future::select(next_acquire, JsFuture::from(test_sleep::sleep(LOCK_WAIT_MILLISECONDS))).await;
+        let Either::Right((_, waiting_acquire)) = first_finished
+        else {
+            panic!("the lock was acquired while the previous holder's operation was still running");
+        };
+        let next_model_lock: Result<ModelLock, Error> = waiting_acquire.await;
+
+        assert!(next_model_lock.is_ok());
     }
 }

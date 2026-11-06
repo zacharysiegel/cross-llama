@@ -53,20 +53,24 @@ export async function isModelDownloaded(modelManager, modelUrl) {
   return cachedModels.some((cachedModel) => cachedModel.url === resolvedModelUrl);
 }
 
-// Resolves once this page holds the model's lock, across every page of the origin; aborting the signal releases it.
-export function acquireModelLock(modelUrl, abortSignal) {
+// Resolves once this page holds the model's lock, across every page of the origin. Aborting the signal releases it once
+// every promise in heldOperations, to which the holder adds, has settled.
+export function acquireModelLock(modelUrl, abortSignal, heldOperations) {
   return new Promise((resolve, reject) => {
-    const holdUntilAborted = () => new Promise((release) => {
-      if (abortSignal.aborted) {
-        release();
-        return;
+    const holdUntilReleased = async () => {
+      if (!abortSignal.aborted) {
+        resolve();
+        await waitForAbort(abortSignal);
       }
 
-      abortSignal.addEventListener('abort', () => release(), { once: true });
-      resolve();
-    });
-    navigator.locks.request(`${MODEL_LOCK_NAME_PREFIX}${resolveModelUrl(modelUrl)}`, { signal: abortSignal }, holdUntilAborted).catch(reject);
+      await Promise.allSettled(heldOperations);
+    };
+    navigator.locks.request(`${MODEL_LOCK_NAME_PREFIX}${resolveModelUrl(modelUrl)}`, { signal: abortSignal }, holdUntilReleased).catch(reject);
   });
+}
+
+function waitForAbort(abortSignal) {
+  return new Promise((resolve) => abortSignal.addEventListener('abort', () => resolve(), { once: true }));
 }
 
 // Resolves to fewer bytes than asked for when the file is shorter.
