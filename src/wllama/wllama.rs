@@ -87,7 +87,7 @@ impl Model {
     pub async fn load(source: ModelSource, load_options: &LoadOptions, mut on_progress: impl FnMut(LoadProgress)) -> Result<Model, Error> {
         let context_token_count: NonZeroU32 = load_options.nonzero_context_token_count()?;
 
-        let wllama: JsValue = wllama_bridge::settle(wllama_bridge::create_wllama(&source.wllama_directory_url)).await?;
+        let wllama: JsValue = wllama_bridge::settle_wllama_call(wllama_bridge::create_wllama(&source.wllama_directory_url)).await?;
         // Exits on failure, or when this future is dropped.
         let wllama_instance: WllamaInstance = WllamaInstance::new(wllama.unchecked_into::<Wllama>());
 
@@ -143,9 +143,9 @@ impl Model {
                     self.report_progress(progress_reports, request.maximum_token_count, submitted_cancellation_epoch, &mut on_progress)?;
                 }
                 OperationEvent::Settled(Ok(_)) => break,
-                OperationEvent::Settled(Err(generation_error)) => {
+                OperationEvent::Settled(Err(javascript_error)) => {
                     self.check_cancellation(submitted_cancellation_epoch)?;
-                    return Err(GenerationError::Failed(generation_error));
+                    return Err(GenerationError::Failed(wllama_bridge::create_wllama_error(&javascript_error)));
                 }
             }
         }
@@ -239,7 +239,7 @@ async fn read_vocabulary(model_files: &WllamaModelFiles, model_lock: &ModelLock)
     loop {
         let prefix_read: Promise = wllama_bridge::read_model_prefix(model_files, prefix_byte_count);
         model_lock.hold_until_settled(&prefix_read);
-        let prefix_array: JsValue = wllama_bridge::settle(prefix_read).await?;
+        let prefix_array: JsValue = wllama_bridge::settle_wllama_call(prefix_read).await?;
         let prefix: Vec<u8> = Uint8Array::new(&prefix_array).to_vec();
         let vocabulary_read: VocabularyRead = gguf_vocabulary::read_vocabulary(&prefix)?;
         let whole_file_read: bool = prefix.len() < usize::try_from(prefix_byte_count)?;
@@ -272,7 +272,7 @@ async fn load_model(
     });
     let loading: Promise = wllama_bridge::load_model(wllama_instance.wllama(), model_files, &load_parameters.to_string());
     model_lock.hold_until_settled(&loading);
-    let loaded_context_json: JsValue = wllama_bridge::settle(loading).await?;
+    let loaded_context_json: JsValue = wllama_bridge::settle_wllama_call(loading).await?;
     let loaded_context_text: String = loaded_context_json
         .as_string()
         .ok_or_else(|| Error::new("wllama did not describe the loaded context"))?;
@@ -390,7 +390,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     async fn exit_frees_the_model_whose_load_was_pending() {
-        let created_wllama: JsValue = wllama_bridge::settle(wllama_bridge::create_wllama(WLLAMA_DIRECTORY_URL)).await.unwrap();
+        let created_wllama: JsValue = wllama_bridge::settle_wllama_call(wllama_bridge::create_wllama(WLLAMA_DIRECTORY_URL)).await.unwrap();
         let wllama_instance: WllamaInstance = WllamaInstance::new(created_wllama.unchecked_into::<Wllama>());
         let model_lock: ModelLock = ModelLock::acquire(TEST_MODEL_URL).await.unwrap();
         let model_manager: ModelManager = wllama_instance.wllama().model_manager();
@@ -399,7 +399,7 @@ mod tests {
 
         let loading: Promise = wllama_bridge::load_model(wllama_instance.wllama(), &model_files, &load_parameters.to_string());
         let exited: Result<(), Error> = wllama_instance.exit().await;
-        let _: Result<JsValue, Error> = wllama_bridge::settle(loading).await;
+        let _: Result<JsValue, Error> = wllama_bridge::settle_wllama_call(loading).await;
 
         assert!(exited.is_ok());
         assert!(!wllama_instance.wllama().is_model_loaded());

@@ -40,7 +40,7 @@ pub async fn download_model(source: &ModelSource, mut on_progress: impl FnMut(Do
 /// Reads only the browser's storage.
 pub async fn is_model_downloaded(source: &ModelSource) -> Result<bool, Error> {
     let model_manager: ModelManager = create_model_manager(&source.wllama_directory_url).await?;
-    let downloaded: JsValue = wllama_bridge::settle(wllama_bridge::is_model_downloaded(&model_manager, &source.model_url)).await?;
+    let downloaded: JsValue = wllama_bridge::settle_wllama_call(wllama_bridge::is_model_downloaded(&model_manager, &source.model_url)).await?;
 
     downloaded
         .as_bool()
@@ -74,13 +74,17 @@ pub(crate) async fn download_model_files(
 
         match event {
             OperationEvent::Event(progress) => on_progress(progress),
-            OperationEvent::Settled(settlement) => return settlement.map(|model_files: JsValue| model_files.unchecked_into::<WllamaModelFiles>()),
+            OperationEvent::Settled(settlement) => {
+                return settlement
+                    .map(|model_files: JsValue| model_files.unchecked_into::<WllamaModelFiles>())
+                    .map_err(|javascript_error: JsValue| wllama_bridge::create_wllama_error(&javascript_error));
+            }
         }
     }
 }
 
 async fn create_model_manager(wllama_directory_url: &str) -> Result<ModelManager, Error> {
-    let model_manager: JsValue = wllama_bridge::settle(wllama_bridge::create_model_manager(wllama_directory_url)).await?;
+    let model_manager: JsValue = wllama_bridge::settle_wllama_call(wllama_bridge::create_model_manager(wllama_directory_url)).await?;
     Ok(model_manager.unchecked_into::<ModelManager>())
 }
 

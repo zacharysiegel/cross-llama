@@ -63,11 +63,22 @@ pub async fn settle(promise: Promise) -> Result<JsValue, Error> {
     settled.map_err(|javascript_error: JsValue| create_error(&javascript_error))
 }
 
+pub async fn settle_wllama_call(promise: Promise) -> Result<JsValue, Error> {
+    let settled: Result<JsValue, JsValue> = JsFuture::from(promise).await;
+    settled.map_err(|javascript_error: JsValue| create_wllama_error(&javascript_error))
+}
+
 pub fn create_error(javascript_error: &JsValue) -> Error {
-    let message: String = match javascript_error.dyn_ref::<js_sys::Error>() {
+    Error::new(&read_error_message(javascript_error))
+}
+
+pub fn create_wllama_error(javascript_error: &JsValue) -> Error {
+    Error::new(&format!("wllama failed: {}", read_error_message(javascript_error)))
+}
+
+fn read_error_message(javascript_error: &JsValue) -> String {
+    match javascript_error.dyn_ref::<js_sys::Error>() {
         Some(error_object) => String::from(error_object.message()),
         None => javascript_error.as_string().unwrap_or_else(|| format!("{javascript_error:?}")),
-    };
-
-    Error::new(&format!("wllama failed: {message}"))
+    }
 }
