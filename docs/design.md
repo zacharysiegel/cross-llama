@@ -63,7 +63,7 @@ Tokens, batches, samplers and the cache stay inside the crate. A caller that lat
 - `enable_thinking` is false, so a reasoning model's prompt closes its thinking block itself and the reply holds only the answer.
 - A sequence token the template writes and tokenizing also adds is removed from the rendered prompt, as llama.cpp's server does.
 - llama.cpp's built-in templates detect known templates by their text and missed gemma4's; for gemma-3-270m the rendered prompt matches the built-in one exactly.
-- Templates that reject a system message are not rewritten as llama.cpp's server does; such a template fails the request.
+- When a template rejects or drops a system message (gemma-2, Mistral v0.x), checked once when the template is read, a leading system message's text joins the next message after a newline, as llama.cpp's server does.
 
 ## Backends
 

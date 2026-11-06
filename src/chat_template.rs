@@ -4,10 +4,14 @@ use minijinja::syntax::SyntaxConfig;
 use minijinja::value::Serde;
 use minijinja::{Environment, ErrorKind, Template, Value};
 
-use crate::{ChatMessage, Error};
+use crate::{ChatMessage, Error, Role};
 
 const TEMPLATE_NAME: &str = "chat_template";
 const RAISE_EXCEPTION_FUNCTION_NAME: &str = "raise_exception";
+const SYSTEM_ROLE_PROBE_TEXT: &str = "cross-llama system role probe";
+const USER_PROBE_TEXT: &str = "cross-llama user probe";
+// llama.cpp's server's separator.
+const SYSTEM_MESSAGE_SEPARATOR: &str = "\n";
 // llama.cpp's template for a model file that has none.
 const CHATML_TEMPLATE_SOURCE: &str = concat!(
     "{%- for message in messages -%}\n",
@@ -33,6 +37,7 @@ pub struct SequenceTokens {
 pub struct ChatTemplate {
     environment: Environment<'static>,
     sequence_tokens: SequenceTokens,
+    system_role_support: SystemRoleSupportKind,
 }
 
 impl ChatTemplate {
@@ -40,42 +45,25 @@ impl ChatTemplate {
     pub fn new(model_template_source: Option<String>, sequence_tokens: SequenceTokens) -> Result<Self, Error> {
         let source: String = model_template_source.unwrap_or_else(|| CHATML_TEMPLATE_SOURCE.to_string());
         let environment: Environment<'static> = create_environment(source)?;
+        let system_role_support: SystemRoleSupportKind = detect_system_role_support(&environment, &sequence_tokens);
 
         Ok(ChatTemplate {
             environment,
             sequence_tokens,
+            system_role_support,
         })
     }
 
     /// Ends where the model's reply begins.
     pub fn render_prompt(&self, messages: &[ChatMessage]) -> Result<String, Error> {
-        let template: Template = self.environment.get_template(TEMPLATE_NAME)?;
-        let context_json: serde_json::Value = self.create_context_json(messages);
+        let message_jsons: Vec<serde_json::Value> = match self.system_role_support {
+            SystemRoleSupportKind::Rendered => messages.iter().map(create_message_json).collect(),
+            SystemRoleSupportKind::MergedIntoNextMessage => merge_leading_system_message(messages),
+        };
 
-        let rendered: String = template.render(Value::from(Serde(&context_json)))?;
+        let rendered: String = render(&self.environment, message_jsons, &self.sequence_tokens)?;
 
         Ok(self.remove_sequence_tokens_tokenizer_adds(&rendered).to_string())
-    }
-
-    fn create_context_json(&self, messages: &[ChatMessage]) -> serde_json::Value {
-        let message_jsons: Vec<serde_json::Value> = messages
-            .iter()
-            .map(|message| {
-                serde_json::json!({
-                    "role": message.role.chat_template_name(),
-                    "content": message.text,
-                })
-            })
-            .collect();
-
-        serde_json::json!({
-            "messages": message_jsons,
-            "add_generation_prompt": true,
-            "bos_token": self.sequence_tokens.beginning_text,
-            "eos_token": self.sequence_tokens.end_text,
-            // Turns off a reasoning model's thinking.
-            "enable_thinking": false,
-        })
     }
 
     /// Tokenizing would otherwise add a second copy of a sequence token the template already wrote.
@@ -92,6 +80,78 @@ impl ChatTemplate {
 
         prompt
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SystemRoleSupportKind {
+    Rendered,
+    /// The template rejects or drops a system message, so its text joins the next message, as llama.cpp's server does.
+    MergedIntoNextMessage,
+}
+
+fn detect_system_role_support(environment: &Environment<'static>, sequence_tokens: &SequenceTokens) -> SystemRoleSupportKind {
+    let probe_message_jsons: Vec<serde_json::Value> = vec![
+        create_message_json(&ChatMessage {
+            role: Role::System,
+            text: SYSTEM_ROLE_PROBE_TEXT.to_string(),
+        }),
+        create_message_json(&ChatMessage {
+            role: Role::User,
+            text: USER_PROBE_TEXT.to_string(),
+        }),
+    ];
+    let rendered: Result<String, Error> = render(environment, probe_message_jsons, sequence_tokens);
+
+    match rendered {
+        Ok(prompt) if prompt.contains(SYSTEM_ROLE_PROBE_TEXT) => SystemRoleSupportKind::Rendered,
+        _ => SystemRoleSupportKind::MergedIntoNextMessage,
+    }
+}
+
+/// Joins a leading system message's text to the message after it, or drops it when it is the only message.
+fn merge_leading_system_message(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
+    let Some((first_message, later_messages)) = messages.split_first()
+    else {
+        return Vec::new();
+    };
+
+    if first_message.role != Role::System {
+        return messages.iter().map(create_message_json).collect();
+    }
+
+    let Some((next_message, remaining_messages)) = later_messages.split_first()
+    else {
+        return Vec::new();
+    };
+
+    let merged_message: ChatMessage = ChatMessage {
+        role: next_message.role,
+        text: format!("{}{SYSTEM_MESSAGE_SEPARATOR}{}", first_message.text, next_message.text),
+    };
+
+    std::iter::once(&merged_message).chain(remaining_messages).map(create_message_json).collect()
+}
+
+fn create_message_json(message: &ChatMessage) -> serde_json::Value {
+    serde_json::json!({
+        "role": message.role.chat_template_name(),
+        "content": message.text,
+    })
+}
+
+fn render(environment: &Environment<'static>, message_jsons: Vec<serde_json::Value>, sequence_tokens: &SequenceTokens) -> Result<String, Error> {
+    let template: Template = environment.get_template(TEMPLATE_NAME)?;
+    let context_json: serde_json::Value = serde_json::json!({
+        "messages": message_jsons,
+        "add_generation_prompt": true,
+        "bos_token": sequence_tokens.beginning_text,
+        "eos_token": sequence_tokens.end_text,
+        // Turns off a reasoning model's thinking.
+        "enable_thinking": false,
+    });
+
+    let rendered: String = template.render(Value::from(Serde(&context_json)))?;
+    Ok(rendered)
 }
 
 fn create_environment(source: String) -> Result<Environment<'static>, Error> {
@@ -117,6 +177,15 @@ mod tests {
     use crate::chat_template::{ChatTemplate, SequenceTokens};
     use crate::{ChatMessage, Error, Role};
 
+    // The template in gemma-2's GGUF files.
+    const GEMMA_2_TEMPLATE_SOURCE: &str = concat!(
+        "{{ bos_token }}{% if messages[0]['role'] == 'system' %}{{ raise_exception('System role not supported') }}{% endif %}",
+        "{% for message in messages %}{% if (message['role'] == 'user') != (loop.index0 % 2 == 0) %}",
+        "{{ raise_exception('Conversation roles must alternate user/assistant/user/assistant/...') }}{% endif %}",
+        "{% if (message['role'] == 'assistant') %}{% set role = 'model' %}{% else %}{% set role = message['role'] %}{% endif %}",
+        "{{ '<start_of_turn>' + role + '\\n' + message['content'] | trim + '<end_of_turn>\\n' }}{% endfor %}",
+        "{% if add_generation_prompt %}{{'<start_of_turn>model\\n'}}{% endif %}",
+    );
     fn create_message(role: Role, text: &str) -> ChatMessage {
         ChatMessage {
             role,
@@ -169,5 +238,33 @@ mod tests {
         let prompt: String = template.render_prompt(&[create_message(Role::User, "Olá")]).unwrap();
 
         assert_eq!(prompt, "<|im_start|>user\nOlá<|im_end|>\n<|im_start|>assistant\n");
+    }
+
+    #[test]
+    fn render_prompt_merges_system_message_into_next_when_template_rejects_system_role() {
+        let template: ChatTemplate = create_template(Some(GEMMA_2_TEMPLATE_SOURCE));
+        let messages: Vec<ChatMessage> = vec![
+            create_message(Role::System, "Reply in Portuguese."),
+            create_message(Role::User, "Say hello."),
+        ];
+
+        let prompt: String = template.render_prompt(&messages).unwrap();
+
+        assert_eq!(prompt, "<start_of_turn>user\nReply in Portuguese.\nSay hello.<end_of_turn>\n<start_of_turn>model\n");
+    }
+
+    #[test]
+    fn render_prompt_merges_system_message_into_next_when_template_drops_system_role() {
+        let template: ChatTemplate = create_template(Some(
+            "{% for message in messages %}{% if message.role == 'user' %}{{ '[INST] ' + message.content + ' [/INST]' }}{% endif %}{% endfor %}",
+        ));
+        let messages: Vec<ChatMessage> = vec![
+            create_message(Role::System, "Reply in Portuguese."),
+            create_message(Role::User, "Say hello."),
+        ];
+
+        let prompt: String = template.render_prompt(&messages).unwrap();
+
+        assert_eq!(prompt, "[INST] Reply in Portuguese.\nSay hello. [/INST]");
     }
 }
