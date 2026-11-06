@@ -323,3 +323,45 @@ fn check_no_control_token_text(messages: &[ChatMessage], control_token_texts: &[
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use js_sys::Promise;
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    use crate::wllama::wllama;
+    use crate::wllama::wllama_bridge;
+    use crate::wllama::wllama_bridge::{Wllama, WllamaModelFiles};
+    use crate::wllama::wllama_instance::WllamaInstance;
+    use crate::{Error, LoadProgress};
+
+    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
+    // wasm-bindgen-test's runner serves the crate root alongside its own files.
+    const WLLAMA_DIRECTORY_URL: &str = "/build/wllama/";
+    const TEST_MODEL_URL: &str = "/build/models/gemma-3-270m-it-Q8_0.gguf";
+    const CONTEXT_TOKEN_COUNT: u32 = 4096;
+
+    #[wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(method, js_name = isModelLoaded)]
+        fn is_model_loaded(this: &Wllama) -> bool;
+    }
+
+    #[wasm_bindgen_test]
+    async fn exit_frees_the_model_whose_load_was_pending() {
+        let created_wllama: JsValue = wllama_bridge::settle(wllama_bridge::create_wllama(WLLAMA_DIRECTORY_URL)).await.unwrap();
+        let wllama_instance: WllamaInstance = WllamaInstance::new(created_wllama.unchecked_into::<Wllama>());
+        let model_files: WllamaModelFiles = wllama::download_model(&wllama_instance, TEST_MODEL_URL, &mut |_: LoadProgress| {}).await.unwrap();
+        let load_parameters: serde_json::Value = serde_json::json!({ "n_ctx": CONTEXT_TOKEN_COUNT });
+
+        let loading: Promise = wllama_bridge::load_model(wllama_instance.wllama(), &model_files, &load_parameters.to_string());
+        let exited: Result<(), Error> = wllama_instance.exit().await;
+        let _: Result<JsValue, Error> = wllama_bridge::settle(loading).await;
+
+        assert!(exited.is_ok());
+        assert!(!wllama_instance.wllama().is_model_loaded());
+    }
+}
