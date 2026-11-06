@@ -33,6 +33,8 @@ use crate::{
 const EVERY_LAYER_ON_GPU: i32 = i32::MAX;
 // One sequence, so every request can reuse the prefix the previous one left in the cache.
 const PARALLEL_SEQUENCE_COUNT: u32 = 1;
+// The first prompt progress report, which the context check needs, arrives only after the first batch is read.
+const PROMPT_BATCH_TOKEN_COUNT: u32 = 512;
 const INITIAL_VOCABULARY_PREFIX_BYTE_COUNT: u32 = 8 * 1024 * 1024;
 const VOCABULARY_PREFIX_GROWTH_FACTOR: u32 = 4;
 // The llama.cpp server requires a name for a JSON schema but does not use it.
@@ -267,6 +269,7 @@ async fn load_model(
         "n_gpu_layers": EVERY_LAYER_ON_GPU,
         "n_parallel": PARALLEL_SEQUENCE_COUNT,
         "swa_full": sliding_window_cache == SlidingWindowCache::Full,
+        "n_batch": PROMPT_BATCH_TOKEN_COUNT,
     });
     let loaded_context_json: JsValue =
         wllama_bridge::settle(wllama_bridge::load_model(wllama_instance.wllama(), model_files, &load_parameters.to_string())).await?;

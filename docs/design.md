@@ -34,7 +34,7 @@ model.unload().await?;
   - A reply that reaches the maximum tokens unfinished is a failure when a schema is set, because its JSON is incomplete; without a schema it returns the text so far.
     - Both backends share the check: a schema reply at the maximum fails unless it parses as JSON, and a top-level number also needs whitespace after it, since a cut-off number still parses. The llama.cpp server inside wllama stops at the maximum without sampling the end token, and its JSON grammar allows trailing whitespace, so a complete reply can still reach the maximum.
   - A request whose prompt plus maximum reply does not fit in the context fails before reading the prompt.
-    - wllama does not expose its tokenizer, so the browser backend checks on wllama's first prompt progress report, which comes before it reads the prompt.
+    - wllama does not expose its tokenizer, so the browser backend checks on wllama's first prompt progress report, which wllama delivers only after reading the prompt's first batch, so such a request fails after one batch of 512 tokens (`n_batch`; llama.cpp's default of 2048 reads most prompts whole first).
 - `cancel` stops the generation in progress and any queued before the call; dropping a `generate` future also stops its generation.
 - One generation runs at a time per `Model`; a second call waits for the first.
 - `unload` frees the model and resolves once its memory is freed; dropping a `Model` frees it too, but blocks the dropping thread until the model's worker thread has finished its current batch and freed the model.
@@ -66,7 +66,7 @@ Each backend is a module selected by `#[cfg]`, re-exported as the same public ty
   - The bridge imports wllama from the directory in `ModelSource` at run time and passes requests and streamed chunks across as JSON strings.
   - Each `Model` has its own wllama instance; `unload` and dropping the `Model` call wllama's `exit`, which ends its worker.
     - wllama's `exit` frees nothing while `loadModel` has yet to create its worker, so the bridge's `exit` first waits for a pending load to settle; dropping the `Model::load` future during the load then frees the model once it has loaded.
-- Loading: wllama's model manager downloads the model into the browser's storage, or finds it there, reporting `Downloading`; then `loadModel` with `n_gpu_layers` set to keep every layer on the GPU through WebGPU, `swa_full` from `LoadOptions`, and one sequence (`n_parallel`), so each request can reuse the prefix the previous one left in the cache.
+- Loading: wllama's model manager downloads the model into the browser's storage, or finds it there, reporting `Downloading`; then `loadModel` with `n_gpu_layers` set to keep every layer on the GPU through WebGPU, `swa_full` from `LoadOptions`, one sequence (`n_parallel`), so each request can reuse the prefix the previous one left in the cache, and 512-token batches (`n_batch`).
   - The design planned `loadModelFromUrl`, which does both steps at once; splitting them separates `Downloading` from `Loading` and lets the backend read the vocabulary between them.
 - Control tokens: wllama does not expose its tokenizer, so the backend reads the token texts and types from the GGUF file's metadata in wllama's cache and rejects a message containing the text of a control, unknown or end-of-generation token. This matches the tokens llama.cpp parses as special in a templated prompt.
 - Generation: `createChatCompletion` with `response_format` set to the JSON schema; wllama reuses the cached prompt prefix itself.
