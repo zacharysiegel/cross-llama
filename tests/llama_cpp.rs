@@ -2,6 +2,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use cross_llama::{
     ChatMessage,
@@ -17,7 +18,9 @@ use cross_llama::{
     Role,
     SlidingWindowCache,
 };
-use futures::executor;
+use futures::channel::oneshot;
+use futures::future::Either;
+use futures::{executor, future};
 
 const TEST_MODEL_RELATIVE_PATH: &str = "build/models/gemma-3-270m-it-Q8_0.gguf";
 const CONTEXT_TOKEN_COUNT: u32 = 4096;
@@ -81,8 +84,38 @@ fn create_capital_question_request(maximum_token_count: usize) -> GenerationRequ
     )
 }
 
+fn create_long_story_request(maximum_token_count: usize) -> GenerationRequest {
+    create_request(
+        vec![create_message(Role::User, "Tell me a long story about a lighthouse keeper.")],
+        None,
+        maximum_token_count,
+    )
+}
+
 fn generate_ignoring_progress(model: &Model, request: &GenerationRequest) -> Generation {
     executor::block_on(model.generate(request, |_: GenerationProgress| {})).unwrap()
+}
+
+fn drop_generate_future_once_generating(model: &Model, request: &GenerationRequest) {
+    let (generating_sender, generating_receiver): (oneshot::Sender<()>, oneshot::Receiver<()>) = oneshot::channel();
+    let mut generating_sender: Option<oneshot::Sender<()>> = Some(generating_sender);
+    let generation = Box::pin(model.generate(request, move |progress: GenerationProgress| {
+        let first_generating_report: Option<oneshot::Sender<()>> = match progress {
+            GenerationProgress::Generating { .. } => generating_sender.take(),
+            GenerationProgress::ReadingPrompt { .. } => None,
+        };
+
+        if let Some(sender) = first_generating_report {
+            sender.send(()).unwrap();
+        }
+    }));
+
+    let first_finished = executor::block_on(future::select(generation, generating_receiver));
+
+    match first_finished {
+        Either::Left(_) => panic!("the generation finished before it reported generating"),
+        Either::Right((_, unfinished_generation)) => drop(unfinished_generation),
+    }
 }
 
 fn generate_after_previous_request_and_on_fresh_model(
@@ -305,11 +338,7 @@ fn generate_reports_prompt_progress_then_token_progress_in_order() {
 fn cancel_stops_generation_in_progress() {
     let model: Model = load_test_model(SlidingWindowCache::Full);
     let maximum_token_count: usize = 200;
-    let request: GenerationRequest = create_request(
-        vec![create_message(Role::User, "Tell me a long story about a lighthouse keeper.")],
-        None,
-        maximum_token_count,
-    );
+    let request: GenerationRequest = create_long_story_request(maximum_token_count);
     let mut generated_token_count_at_last_report: usize = 0;
 
     let generation_outcome: Result<Generation, GenerationError> = executor::block_on(model.generate(&request, |progress: GenerationProgress| {
@@ -321,6 +350,44 @@ fn cancel_stops_generation_in_progress() {
 
     assert!(matches!(generation_outcome, Err(GenerationError::Cancelled)));
     assert!(generated_token_count_at_last_report < maximum_token_count);
+}
+
+#[test]
+fn cancel_stops_generations_queued_before_it() {
+    let model: Model = load_test_model(SlidingWindowCache::Full);
+    let request: GenerationRequest = create_long_story_request(200);
+    let mut cancelled: bool = false;
+    // Cancels once, since a later cancel could reach the queued generation after it starts.
+    let running_generation = model.generate(&request, |progress: GenerationProgress| {
+        if let GenerationProgress::Generating { .. } = progress
+            && !cancelled
+        {
+            model.cancel();
+            cancelled = true;
+        }
+    });
+    let queued_generation = model.generate(&request, |_: GenerationProgress| {});
+
+    // Polls the running generation first, so both are submitted before the running one can report generating.
+    let (_, queued_generation_outcome): (Result<Generation, GenerationError>, Result<Generation, GenerationError>) =
+        executor::block_on(future::join(running_generation, queued_generation));
+
+    assert!(matches!(queued_generation_outcome, Err(GenerationError::Cancelled)));
+}
+
+#[test]
+fn dropping_generate_future_stops_its_generation() {
+    let model: Model = load_test_model(SlidingWindowCache::Full);
+    let request: GenerationRequest = create_long_story_request(200);
+    let next_request: GenerationRequest = create_request(vec![create_message(Role::User, "Say hello to me.")], None, 1);
+
+    let complete_generation: Generation = generate_ignoring_progress(&model, &request);
+    drop_generate_future_once_generating(&model, &request);
+    let next_request_started_at: Instant = Instant::now();
+    generate_ignoring_progress(&model, &next_request);
+    let next_request_duration: Duration = next_request_started_at.elapsed();
+
+    assert!(next_request_duration < complete_generation.generating_duration / 2);
 }
 
 #[test]
