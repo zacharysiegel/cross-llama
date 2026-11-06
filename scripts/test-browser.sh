@@ -39,6 +39,9 @@ fi
 
 export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER="${repo_dir}/${test_runner}"
 export WASM_BINDGEN_TEST_TIMEOUT="${TEST_TIMEOUT_SECONDS}"
+# Keeps the runner's requests to the WebDriver on this machine away from an HTTP proxy set in the environment.
+export NO_PROXY="127.0.0.1,localhost${NO_PROXY:+,${NO_PROXY}}"
+export no_proxy="${NO_PROXY}"
 
 case "${browser}" in
     chrome)
