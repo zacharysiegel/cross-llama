@@ -6,6 +6,7 @@ use std::thread::JoinHandle;
 
 use futures::StreamExt;
 use futures::channel::mpsc::UnboundedReceiver;
+use futures::channel::oneshot;
 
 use crate::llama_cpp::worker;
 use crate::llama_cpp::worker::{
@@ -21,6 +22,7 @@ use crate::llama_cpp::worker::{
 use crate::{Error, Generation, GenerationError, GenerationProgress, GenerationRequest, LoadOptions, LoadProgress};
 
 const WORKER_THREAD_NAME: &str = "cross-llama";
+const WORKER_JOINER_THREAD_NAME: &str = "cross-llama-unload";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelSource {
@@ -87,13 +89,49 @@ impl Model {
     pub fn cancel(&self) {
         self.cancellation_epoch.fetch_add(1, Ordering::SeqCst);
     }
+
+    /// Frees the model without blocking the calling thread; resolves once its memory is freed.
+    pub async fn unload(mut self) -> Result<(), Error> {
+        self.cancel();
+        self.request_worker_shutdown();
+
+        let worker_thread: Option<JoinHandle<()>> = self.worker_thread.take();
+
+        let Some(worker_thread) = worker_thread
+        else {
+            return Ok(());
+        };
+
+        let (joined_sender, joined_receiver): (oneshot::Sender<std::thread::Result<()>>, oneshot::Receiver<std::thread::Result<()>>) = oneshot::channel();
+
+        std::thread::Builder::new()
+            .name(WORKER_JOINER_THREAD_NAME.to_string())
+            .spawn(move || {
+                let joined: std::thread::Result<()> = worker_thread.join();
+                // Fails only when the caller stopped waiting.
+                let _ = joined_sender.send(joined);
+            })?;
+
+        let joined: Result<std::thread::Result<()>, oneshot::Canceled> = joined_receiver.await;
+
+        match joined {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(Error::new("the model's thread panicked")),
+            Err(oneshot::Canceled) => Err(Error::new("the model's thread stopped before it was joined")),
+        }
+    }
+
+    fn request_worker_shutdown(&self) {
+        // Fails only when the thread has already stopped.
+        let _ = self.command_sender.send(WorkerCommand::Shutdown);
+    }
 }
 
 impl Drop for Model {
     fn drop(&mut self) {
         self.cancel();
-        // Fails only when the thread has already stopped.
-        let _ = self.command_sender.send(WorkerCommand::Shutdown);
+        self.request_worker_shutdown();
+
         let worker_thread: Option<JoinHandle<()>> = self.worker_thread.take();
 
         if let Some(worker_thread) = worker_thread {
