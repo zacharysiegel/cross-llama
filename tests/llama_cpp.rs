@@ -24,10 +24,10 @@ const CONTEXT_TOKEN_COUNT: u32 = 4096;
 const LONG_INSTRUCTION_SENTENCE: &str = "You are a patient tutor who grades short answers written by students of Portuguese. ";
 const LONG_INSTRUCTION_REPETITION_COUNT: usize = 80;
 
-fn create_load_options() -> LoadOptions {
+fn create_load_options(sliding_window_cache: SlidingWindowCache) -> LoadOptions {
     LoadOptions {
         context_token_count: CONTEXT_TOKEN_COUNT,
-        sliding_window_cache: SlidingWindowCache::Full,
+        sliding_window_cache,
     }
 }
 
@@ -37,8 +37,8 @@ fn create_model_source() -> ModelSource {
     }
 }
 
-fn load_test_model() -> Model {
-    executor::block_on(Model::load(create_model_source(), &create_load_options(), |_: LoadProgress| {})).unwrap()
+fn load_test_model(sliding_window_cache: SlidingWindowCache) -> Model {
+    executor::block_on(Model::load(create_model_source(), &create_load_options(sliding_window_cache), |_: LoadProgress| {})).unwrap()
 }
 
 fn create_message(role: Role, text: &str) -> ChatMessage {
@@ -67,10 +67,25 @@ fn generate_ignoring_progress(model: &Model, request: &GenerationRequest) -> Gen
     executor::block_on(model.generate(request, |_: GenerationProgress| {})).unwrap()
 }
 
+fn generate_after_previous_request_and_on_fresh_model(
+    sliding_window_cache: SlidingWindowCache,
+    previous_request: &GenerationRequest,
+    request: &GenerationRequest,
+) -> (Generation, Generation) {
+    let model: Model = load_test_model(sliding_window_cache);
+    let fresh_model: Model = load_test_model(sliding_window_cache);
+
+    generate_ignoring_progress(&model, previous_request);
+    let generation: Generation = generate_ignoring_progress(&model, request);
+    let fresh_generation: Generation = generate_ignoring_progress(&fresh_model, request);
+
+    (generation, fresh_generation)
+}
+
 #[test]
 fn load_reports_increasing_progress_up_to_whole() {
     let mut loaded_proportions: Vec<f32> = Vec::new();
-    let load_outcome: Result<Model, Error> = executor::block_on(Model::load(create_model_source(), &create_load_options(), |progress: LoadProgress| {
+    let load_outcome: Result<Model, Error> = executor::block_on(Model::load(create_model_source(), &create_load_options(SlidingWindowCache::Full), |progress: LoadProgress| {
         if let LoadProgress::Loading { loaded_proportion } = progress {
             loaded_proportions.push(loaded_proportion);
         }
@@ -83,7 +98,7 @@ fn load_reports_increasing_progress_up_to_whole() {
 
 #[test]
 fn generate_returns_plain_reply_within_maximum() {
-    let model: Model = load_test_model();
+    let model: Model = load_test_model(SlidingWindowCache::Full);
     let maximum_token_count: usize = 16;
     let request: GenerationRequest = create_request(vec![create_message(Role::User, "Say hello to me.")], None, maximum_token_count);
 
@@ -95,7 +110,7 @@ fn generate_returns_plain_reply_within_maximum() {
 
 #[test]
 fn generate_with_json_schema_returns_matching_json() {
-    let model: Model = load_test_model();
+    let model: Model = load_test_model(SlidingWindowCache::Full);
     let json_schema: serde_json::Value = serde_json::json!({
         "type": "object",
         "properties": {
@@ -122,7 +137,7 @@ fn generate_with_json_schema_returns_matching_json() {
 
 #[test]
 fn generate_reuses_prompt_prefix_shared_with_previous_request() {
-    let model: Model = load_test_model();
+    let model: Model = load_test_model(SlidingWindowCache::Full);
     let long_instruction: String = create_long_instruction();
     let warm_up_request: GenerationRequest = create_request(vec![create_message(Role::User, "Count to three.")], None, 4);
     let first_request: GenerationRequest = create_request(
@@ -152,8 +167,58 @@ fn generate_reuses_prompt_prefix_shared_with_previous_request() {
 }
 
 #[test]
+fn generate_with_reused_prefix_replies_as_fresh_model_does() {
+    let long_instruction: String = create_long_instruction();
+    let previous_request: GenerationRequest = create_request(
+        vec![
+            create_message(Role::System, &long_instruction),
+            create_message(Role::User, "The student wrote: Eu sou cansado."),
+        ],
+        None,
+        16,
+    );
+    let request: GenerationRequest = create_request(
+        vec![
+            create_message(Role::System, &long_instruction),
+            create_message(Role::User, "The student wrote: Ela tem fome."),
+        ],
+        None,
+        16,
+    );
+
+    let (generation, fresh_generation): (Generation, Generation) =
+        generate_after_previous_request_and_on_fresh_model(SlidingWindowCache::Full, &previous_request, &request);
+
+    assert!(generation.reused_token_count > 0);
+    assert_eq!(generation.text, fresh_generation.text);
+}
+
+#[test]
+fn generate_after_window_only_cache_dropped_early_positions_replies_as_fresh_model_does() {
+    let previous_request: GenerationRequest = create_request(
+        vec![
+            create_message(Role::System, &create_long_instruction()),
+            create_message(Role::User, "Write one sentence about the sea."),
+        ],
+        None,
+        4,
+    );
+    let request: GenerationRequest = create_request(
+        vec![create_message(Role::User, "Name three colours of the rainbow, one per line.")],
+        None,
+        16,
+    );
+
+    let (generation, fresh_generation): (Generation, Generation) =
+        generate_after_previous_request_and_on_fresh_model(SlidingWindowCache::WindowOnly, &previous_request, &request);
+
+    assert_eq!(generation.reused_token_count, 0);
+    assert_eq!(generation.text, fresh_generation.text);
+}
+
+#[test]
 fn generate_reports_prompt_progress_then_token_progress_in_order() {
-    let model: Model = load_test_model();
+    let model: Model = load_test_model(SlidingWindowCache::Full);
     let request: GenerationRequest = create_request(
         vec![
             create_message(Role::System, &create_long_instruction()),
@@ -201,7 +266,7 @@ fn generate_reports_prompt_progress_then_token_progress_in_order() {
 
 #[test]
 fn cancel_stops_generation_in_progress() {
-    let model: Model = load_test_model();
+    let model: Model = load_test_model(SlidingWindowCache::Full);
     let maximum_token_count: usize = 200;
     let request: GenerationRequest = create_request(
         vec![create_message(Role::User, "Tell me a long story about a lighthouse keeper.")],
@@ -223,7 +288,7 @@ fn cancel_stops_generation_in_progress() {
 
 #[test]
 fn generate_after_cancel_completes() {
-    let model: Model = load_test_model();
+    let model: Model = load_test_model(SlidingWindowCache::Full);
     let request: GenerationRequest = create_request(vec![create_message(Role::User, "Say hello to me.")], None, 8);
 
     model.cancel();

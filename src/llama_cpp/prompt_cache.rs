@@ -30,12 +30,15 @@ impl PromptCache {
 
     /// Clears the cache from the first token that differs from `prompt_tokens` and returns how many tokens remain.
     pub fn keep_reusable_prefix(&mut self, context: &mut LlamaContext, prompt_tokens: &[LlamaToken]) -> Result<usize, Error> {
-        let reusable_token_count: usize = reusable_prefix_length(&self.cached_tokens, prompt_tokens);
-        let removed: bool = context.clear_kv_cache_seq(Some(SEQUENCE_ID), Some(u32::try_from(reusable_token_count)?), None)?;
-        // Positive once a sliding-window cache has overwritten early positions, which the kept prefix still needs.
+        // A window-only sliding-window cache drops its earliest positions once it fills; a kept prefix needs them all.
         let earliest_cached_position: i32 = context.kv_cache_seq_pos_min(i32::try_from(SEQUENCE_ID)?);
+        let reusable_token_count: usize = match earliest_cached_position {
+            0 => reusable_prefix_length(&self.cached_tokens, prompt_tokens),
+            _ => 0,
+        };
+        let removed: bool = context.clear_kv_cache_seq(Some(SEQUENCE_ID), Some(u32::try_from(reusable_token_count)?), None)?;
 
-        if !removed || earliest_cached_position > 0 {
+        if !removed {
             self.clear(context);
             return Ok(0);
         }
