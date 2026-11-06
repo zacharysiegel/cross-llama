@@ -103,3 +103,63 @@ export async function exit(wllama) {
   await pendingLoads.get(wllama)?.catch(() => {});
   await wllama.exit();
 }
+
+export async function probeBrowserCapability() {
+  const webGpuAdapter = await requestWebGpuAdapter();
+  const storageEstimate = await estimateStorage();
+
+  return JSON.stringify({
+    webgpu_adapter: webGpuAdapter && { maximum_buffer_byte_count: webGpuAdapter.limits.maxBufferSize },
+    cross_origin_isolated: globalThis.crossOriginIsolated === true,
+    wllama_build: needsWllamaCompatibilityBuild() ? 'compatibility' : 'default',
+    storage_quota_byte_count: storageEstimate?.quota ?? null,
+    storage_usage_byte_count: storageEstimate?.usage ?? null,
+    storage_persisted: await isStoragePersisted(),
+    device_memory_gigabytes: navigator.deviceMemory ?? null,
+  });
+}
+
+// A fallback adapter runs on the CPU.
+async function requestWebGpuAdapter() {
+  let adapter = null;
+
+  try {
+    adapter = await navigator.gpu.requestAdapter();
+  } catch {
+    return null;
+  }
+
+  const isFallbackAdapter = adapter?.info?.isFallbackAdapter ?? adapter?.isFallbackAdapter ?? false;
+  return adapter && !isFallbackAdapter ? adapter : null;
+}
+
+// wllama 3.8.1's rule for switching to its compatibility build.
+function needsWllamaCompatibilityBuild() {
+  return !('Suspending' in WebAssembly) || !supportsWebAssemblyMemory64();
+}
+
+function supportsWebAssemblyMemory64() {
+  try {
+    new WebAssembly.Memory({ address: 'i64', initial: 1n });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function estimateStorage() {
+  try {
+    const { quota, usage } = await navigator.storage.estimate();
+    return { quota: Math.floor(quota), usage: Math.floor(usage) };
+  } catch {
+    return null;
+  }
+}
+
+async function isStoragePersisted() {
+  try {
+    return await navigator.storage.persisted();
+  } catch {
+    return false;
+  }
+}

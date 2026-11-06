@@ -51,6 +51,10 @@ extern "C" {
 
     #[wasm_bindgen(js_name = exit)]
     pub fn exit(wllama: &Wllama) -> Promise;
+
+    /// Resolves to the capability as JSON.
+    #[wasm_bindgen(js_name = probeBrowserCapability)]
+    pub fn probe_browser_capability() -> Promise;
 }
 
 pub async fn settle(promise: Promise) -> Result<JsValue, Error> {
