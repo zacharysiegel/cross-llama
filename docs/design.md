@@ -9,6 +9,11 @@ let model: Model = Model::load(source, &load_options, |progress: LoadProgress| {
 let generation: Generation = model.generate(&request, |progress: GenerationProgress| { ... }).await?;
 model.cancel();
 model.unload().await?;
+
+// wasm32 only
+download_model(&source, |progress: DownloadProgress| { ... }).await?;
+let downloaded: bool = is_model_downloaded(&source).await?;
+let capability: BrowserCapability = probe_browser_capability().await?;
 ```
 
 - `ModelSource`: a file path on targets other than `wasm32`; in the browser, the model's URL and the URL of the directory holding wllama's files.
@@ -19,7 +24,7 @@ model.unload().await?;
 - `LoadProgress`: `Downloading` with bytes downloaded and total (the browser backend only), then `Loading` with the proportion loaded.
   - wllama reports no progress while loading, so the browser backend reports `Loading` at 0 and at 1 only.
 - `GenerationRequest`:
-  - messages, each a role and text; the model's own chat template formats them; text containing the model's control tokens is rejected, so a message cannot end its turn and forge another
+  - messages, each a role and text, formatted as described under "Chat template"; text containing the model's control tokens is rejected, so a message cannot end its turn and forge another
   - an optional JSON schema the reply must match
   - temperature and seed
   - maximum tokens
@@ -39,8 +44,26 @@ model.unload().await?;
 - One generation runs at a time per `Model`; a second call waits for the first.
 - `unload` frees the model and resolves once its memory is freed; dropping a `Model` frees it too, but blocks the dropping thread until the model's worker thread has finished its current batch and freed the model.
 - Errors use `minimer`'s static error type, which keeps the source error as text, so errors can cross the worker thread and be sent between async tasks.
+- In the browser only:
+  - `download_model` puts the model in wllama's cache in the browser's storage, reporting `DownloadProgress`, without loading it or starting a wllama worker; `Model::load` then finds it there.
+  - `is_model_downloaded` reads only that cache.
+  - `probe_browser_capability` returns a `BrowserCapability`:
+    - the WebGPU adapter's `maxBufferSize`, absent with no adapter or only a fallback adapter
+    - cross-origin isolation
+    - which wllama build the browser gets (`WllamaBuildKind`), by wllama 3.8.1's rule: the compatibility build without JSPI or WebAssembly 64-bit memory
+    - storage quota, usage and whether it is persisted
+    - `navigator.deviceMemory`, where the browser reports it
 
 Tokens, batches, samplers and the cache stay inside the crate. A caller that later needs one of them gets it added deliberately.
+
+## Chat template
+
+- Both backends render the GGUF file's Jinja template (`tokenizer.chat_template`) with the same code, minijinja, so the same request gives the same prompt; a file without a template gets ChatML, llama.cpp's own fallback.
+- Rendering follows Hugging Face's transformers and llama.cpp's server: `trim_blocks` and `lstrip_blocks`, Python's string and dictionary methods (minijinja-contrib's `pycompat`), `raise_exception`, and the variables `messages`, `add_generation_prompt`, `bos_token`, `eos_token` and `enable_thinking`.
+- `enable_thinking` is false, so a reasoning model's prompt closes its thinking block itself and the reply holds only the answer.
+- A sequence token the template writes and tokenizing also adds is removed from the rendered prompt, as llama.cpp's server does.
+- llama.cpp's built-in templates detect known templates by their text and missed gemma4's; for gemma-3-270m the rendered prompt matches the built-in one exactly.
+- Templates that reject a system message are not rewritten as llama.cpp's server does; such a template fails the request.
 
 ## Backends
 
@@ -67,10 +90,12 @@ Each backend is a module selected by `#[cfg]`, re-exported as the same public ty
   - Each `Model` has its own wllama instance; `unload` and dropping the `Model` call wllama's `exit`, which ends its worker.
     - wllama's `exit` frees nothing while `loadModel` has yet to create its worker, so the bridge's `exit` first waits for a pending load to settle; dropping the `Model::load` future during the load then frees the model once it has loaded.
 - Loading: wllama's model manager downloads the model into the browser's storage, or finds it there, reporting `Downloading`; then `loadModel` with `n_gpu_layers` set to keep every layer on the GPU through WebGPU, `swa_full` from `LoadOptions`, one sequence (`n_parallel`), so each request can reuse the prefix the previous one left in the cache, and 512-token batches (`n_batch`).
-  - `jinja` off and `reasoning_format` `none`, so the prompt comes from llama.cpp's built-in chat templates and the reply text keeps a reasoning model's thinking, as in the llama.cpp backend.
   - The design planned `loadModelFromUrl`, which does both steps at once; splitting them separates `Downloading` from `Loading` and lets the backend read the vocabulary between them.
+  - A Web Lock (`navigator.locks`) named for the model's absolute URL covers downloading, reading and loading the cached files, in `Model::load` and `download_model` alike, so two pages, or a prefetch and a load, never write the same file at once. Dropping the future releases it.
+  - The chat template, the sequence tokens and whether tokenizing adds them come from wllama after the load.
 - Control tokens: wllama does not expose its tokenizer, so the backend reads the token texts and types from the GGUF file's metadata in wllama's cache and rejects a message containing the text of a control, unknown or end-of-generation token. This matches the tokens llama.cpp parses as special in a templated prompt.
-- Generation: `createChatCompletion` with `response_format` set to the JSON schema; wllama reuses the cached prompt prefix itself.
+- Generation: `createCompletion` of the prompt the crate rendered, with the JSON schema as `json_schema`, which gets the llama.cpp server's schema-only grammar; wllama reuses the cached prompt prefix itself.
+  - The planned `createChatCompletion` with Jinja on constrains a schema reply to JSON or JSON inside a code fence, which the server counts but leaves out of the text; gemma4 took the fence on every grader reply, five tokens more, and two of twelve replies differed from the llama.cpp backend's.
   - The request turns off the samplers the llama.cpp server enables by default or takes from the model's metadata (`top_k`, `top_p`, `min_p` and others), so both backends sample from the whole distribution after temperature.
 - Progress: `stream` with `onData`, `return_progress` and `timings_per_token`; each chunk carries either `prompt_progress` (`total`, `cache`, `processed`) or the next piece of the reply, with the timings so far.
   - `ReadingPrompt` comes after each batch wllama reads, starting with one whose read count is the reused count.
@@ -85,6 +110,7 @@ Each backend is a module selected by `#[cfg]`, re-exported as the same public ty
 - Measured on an M4 Max with gemma3 12B Q4_K_M:
   - Chrome, default build: 124 tokens/s reading the prompt, 27 generating; p95 3.0 s per graded answer with prefix reuse.
   - Safari, compatibility build: 26 tokens/s reading, 16 generating.
+- Measured on an M4 Max with gemma4 12B QAT, Chrome, default build, twelve grader cases: 20 tokens/s generating, median 3.3 s per graded answer with prefix reuse; replies and token counts identical to the llama.cpp backend's.
 - The 7.3 GB model loads into GPU memory, not WebAssembly memory, so the compatibility build's 4 GB WebAssembly limit does not stop it.
 
 ## Assets the app serves in the browser
@@ -98,12 +124,15 @@ Each backend is a module selected by `#[cfg]`, re-exported as the same public ty
 ## Testing
 
 - Shared request and response types: host unit tests.
+- Chat template rendering: host unit tests, including that gemma-3-270m's template renders as llama.cpp's built-in template does.
 - `llama_cpp`: integration tests that load a small GGUF (gemma-3-270m), generate with and without a schema, and check prefix reuse and cancellation.
 - `wllama`: `wasm-bindgen-test` in a real browser, with the same tests against the same small model, since this backend's code only runs in a browser.
-  - Unit tests under `src/wllama/` check that `exit` frees the model, through wllama's own `isModelLoaded`, which the public API cannot observe.
+  - Unit tests under `src/wllama/` check that `exit` frees the model, through wllama's own `isModelLoaded`, and that `download_model` waits for a held model lock, neither of which the public API can observe.
+  - The cache tests download `tests/data/empty.gguf`, 24 bytes, each under its own query string, which gives it its own cache entry.
   - `scripts/test-browser.sh` runs them in headless Chrome, or in Safari with `--safari`. wasm-bindgen-test's runner serves the repository root, so the tests load `build/wllama/` and `build/models/` from it, with the cross-origin isolation headers it sends by default.
   - Safari runs each test in a page of its own, because loading a model into a page that had already loaded others hung inside wllama's compatibility build (wllama 3.8.1, Safari 26.6.2; not traced further). One reload, as the unload test does, works.
-  - The runner sends large files without `Content-Length`, so in these tests wllama reports no download total and downloads the model again for every load.
+  - The runner sends files over 32 KB without `Content-Length`, so in these tests wllama reports no download total for the model and downloads it again for every load.
+  - The script sets `NO_PROXY` for the loopback addresses, since an HTTP proxy in the environment otherwise receives the runner's requests to the WebDriver.
 - Shared request and fixture helpers for both backends' tests live in `tests/helpers/`.
 
 ## Out of scope for the first version
