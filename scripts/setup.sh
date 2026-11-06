@@ -6,7 +6,8 @@
 
 set -euo pipefail
 
-repo_dir=$(git rev-parse --show-toplevel)
+# The repository root is the parent of this script's directory, whatever the caller's working directory.
+repo_dir="${0:A:h:h}"
 cd "${repo_dir}"
 
 readonly WLLAMA_DIRECTORY="build/wllama"
