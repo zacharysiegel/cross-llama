@@ -96,7 +96,7 @@ pub fn reusable_prefix_length(cached_tokens: &[LlamaToken], prompt_tokens: &[Lla
 mod tests {
     use llama_cpp_2::token::LlamaToken;
 
-    use super::reusable_prefix_length;
+    use crate::llama_cpp::prompt_cache;
 
     fn create_tokens(token_ids: &[i32]) -> Vec<LlamaToken> {
         token_ids.iter().map(|token_id| LlamaToken(*token_id)).collect()
@@ -107,7 +107,7 @@ mod tests {
         let cached_tokens: Vec<LlamaToken> = create_tokens(&[1, 2, 3, 4, 5]);
         let prompt_tokens: Vec<LlamaToken> = create_tokens(&[1, 2, 9, 4, 5, 6]);
 
-        assert_eq!(reusable_prefix_length(&cached_tokens, &prompt_tokens), 2);
+        assert_eq!(prompt_cache::reusable_prefix_length(&cached_tokens, &prompt_tokens), 2);
     }
 
     #[test]
@@ -115,6 +115,6 @@ mod tests {
         let cached_tokens: Vec<LlamaToken> = create_tokens(&[1, 2, 3, 4, 5]);
         let prompt_tokens: Vec<LlamaToken> = create_tokens(&[1, 2, 3]);
 
-        assert_eq!(reusable_prefix_length(&cached_tokens, &prompt_tokens), 2);
+        assert_eq!(prompt_cache::reusable_prefix_length(&cached_tokens, &prompt_tokens), 2);
     }
 }
