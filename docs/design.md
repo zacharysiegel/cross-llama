@@ -100,6 +100,7 @@ Each backend is a module selected by `#[cfg]`, re-exported as the same public ty
 - Shared request and response types: host unit tests.
 - `llama_cpp`: integration tests that load a small GGUF (gemma-3-270m), generate with and without a schema, and check prefix reuse and cancellation.
 - `wllama`: `wasm-bindgen-test` in a real browser, with the same tests against the same small model, since this backend's code only runs in a browser.
+  - Unit tests under `src/wllama/` check that `exit` frees the model, through wllama's own `isModelLoaded`, which the public API cannot observe.
   - `scripts/test-browser.sh` runs them in headless Chrome, or in Safari with `--safari`. wasm-bindgen-test's runner serves the repository root, so the tests load `build/wllama/` and `build/models/` from it, with the cross-origin isolation headers it sends by default.
   - Safari runs each test in a page of its own, because loading a model into a page that had already loaded others hung inside wllama's compatibility build (wllama 3.8.1, Safari 26.6.2; not traced further). One reload, as the unload test does, works.
   - The runner sends large files without `Content-Length`, so in these tests wllama reports no download total and downloads the model again for every load.

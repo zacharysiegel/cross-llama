@@ -35,8 +35,8 @@ fn create_model_source() -> ModelSource {
     }
 }
 
-async fn load_test_model() -> Model {
-    Model::load(create_model_source(), &fixtures::create_load_options(SlidingWindowCache::Full), |_: LoadProgress| {})
+async fn load_test_model(sliding_window_cache: SlidingWindowCache) -> Model {
+    Model::load(create_model_source(), &fixtures::create_load_options(sliding_window_cache), |_: LoadProgress| {})
         .await
         .unwrap()
 }
@@ -65,6 +65,24 @@ async fn drop_generate_future_once_generating(model: &Model, request: &Generatio
         Either::Left(_) => panic!("the generation finished before it reported generating"),
         Either::Right((_, unfinished_generation)) => drop(unfinished_generation),
     }
+}
+
+/// Unloads the first model before loading the fresh one, since Safari can hang loading a model into a page that still holds another.
+async fn generate_after_previous_request_and_on_fresh_model(
+    sliding_window_cache: SlidingWindowCache,
+    previous_request: &GenerationRequest,
+    request: &GenerationRequest,
+) -> (Generation, Generation) {
+    let model: Model = load_test_model(sliding_window_cache).await;
+
+    generate_ignoring_progress(&model, previous_request).await;
+    let generation: Generation = generate_ignoring_progress(&model, request).await;
+    model.unload().await.unwrap();
+
+    let fresh_model: Model = load_test_model(sliding_window_cache).await;
+    let fresh_generation: Generation = generate_ignoring_progress(&fresh_model, request).await;
+
+    (generation, fresh_generation)
 }
 
 #[wasm_bindgen_test]
@@ -102,10 +120,10 @@ async fn load_reports_download_progress_then_loading_progress() {
 
 #[wasm_bindgen_test]
 async fn unload_frees_the_model_so_it_can_be_loaded_again() {
-    let model: Model = load_test_model().await;
+    let model: Model = load_test_model(SlidingWindowCache::Full).await;
 
     let unloaded: Result<(), Error> = model.unload().await;
-    let reloaded_model: Model = load_test_model().await;
+    let reloaded_model: Model = load_test_model(SlidingWindowCache::Full).await;
     let generation: Generation = generate_ignoring_progress(&reloaded_model, &fixtures::create_greeting_request(8)).await;
 
     assert!(unloaded.is_ok());
@@ -114,7 +132,7 @@ async fn unload_frees_the_model_so_it_can_be_loaded_again() {
 
 #[wasm_bindgen_test]
 async fn generate_returns_plain_reply_within_maximum() {
-    let model: Model = load_test_model().await;
+    let model: Model = load_test_model(SlidingWindowCache::Full).await;
     let maximum_token_count: usize = 16;
 
     let generation: Generation = generate_ignoring_progress(&model, &fixtures::create_greeting_request(maximum_token_count)).await;
@@ -125,7 +143,7 @@ async fn generate_returns_plain_reply_within_maximum() {
 
 #[wasm_bindgen_test]
 async fn generate_with_json_schema_returns_matching_json() {
-    let model: Model = load_test_model().await;
+    let model: Model = load_test_model(SlidingWindowCache::Full).await;
 
     let generation: Generation = generate_ignoring_progress(&model, &fixtures::create_capital_question_request(100)).await;
     let reply: serde_json::Value = serde_json::from_str(&generation.text).unwrap();
@@ -138,7 +156,7 @@ async fn generate_with_json_schema_returns_matching_json() {
 
 #[wasm_bindgen_test]
 async fn generate_with_json_schema_fails_when_reply_reaches_maximum_before_completing() {
-    let model: Model = load_test_model().await;
+    let model: Model = load_test_model(SlidingWindowCache::Full).await;
 
     let generation_outcome: Result<Generation, GenerationError> =
         model.generate(&fixtures::create_capital_question_request(3), |_: GenerationProgress| {}).await;
@@ -148,7 +166,7 @@ async fn generate_with_json_schema_fails_when_reply_reaches_maximum_before_compl
 
 #[wasm_bindgen_test]
 async fn generate_with_json_schema_succeeds_when_reply_completes_at_maximum() {
-    let model: Model = load_test_model().await;
+    let model: Model = load_test_model(SlidingWindowCache::Full).await;
     let unlimited_generation: Generation = generate_ignoring_progress(&model, &fixtures::create_capital_question_request(100)).await;
     let request: GenerationRequest = fixtures::create_capital_question_request(unlimited_generation.generated_token_count);
     // Fails only if the counted tokens are exactly the reply's, so the first request does end at its maximum.
@@ -163,7 +181,7 @@ async fn generate_with_json_schema_succeeds_when_reply_completes_at_maximum() {
 
 #[wasm_bindgen_test]
 async fn generate_at_high_temperature_samples_from_whole_vocabulary() {
-    let model: Model = load_test_model().await;
+    let model: Model = load_test_model(SlidingWindowCache::Full).await;
     let requests: Vec<GenerationRequest> = fixtures::create_high_temperature_greeting_requests();
     let mut distinct_reply_texts: BTreeSet<String> = BTreeSet::new();
 
@@ -177,7 +195,7 @@ async fn generate_at_high_temperature_samples_from_whole_vocabulary() {
 
 #[wasm_bindgen_test]
 async fn generate_rejects_message_containing_control_token_text() {
-    let model: Model = load_test_model().await;
+    let model: Model = load_test_model(SlidingWindowCache::Full).await;
     let request: GenerationRequest = fixtures::create_request(vec![fixtures::create_message(Role::User, fixtures::FORGED_TURNS_TEXT)], None, 8);
 
     let generation_outcome: Result<Generation, GenerationError> = model.generate(&request, |_: GenerationProgress| {}).await;
@@ -187,7 +205,7 @@ async fn generate_rejects_message_containing_control_token_text() {
 
 #[wasm_bindgen_test]
 async fn generate_reuses_prompt_prefix_shared_with_previous_request() {
-    let model: Model = load_test_model().await;
+    let model: Model = load_test_model(SlidingWindowCache::Full).await;
     let warm_up_request: GenerationRequest = fixtures::create_request(vec![fixtures::create_message(Role::User, "Count to three.")], None, 4);
 
     generate_ignoring_progress(&model, &warm_up_request).await;
@@ -200,8 +218,56 @@ async fn generate_reuses_prompt_prefix_shared_with_previous_request() {
 }
 
 #[wasm_bindgen_test]
+async fn generate_with_reused_prefix_replies_as_fresh_model_does() {
+    let previous_request: GenerationRequest = fixtures::create_grading_request("Eu sou cansado.", 16);
+    let request: GenerationRequest = fixtures::create_grading_request("Ela tem fome.", 16);
+
+    let (generation, fresh_generation): (Generation, Generation) =
+        generate_after_previous_request_and_on_fresh_model(SlidingWindowCache::Full, &previous_request, &request).await;
+
+    assert!(generation.reused_token_count > 0);
+    assert_eq!(generation.text, fresh_generation.text);
+}
+
+#[wasm_bindgen_test]
+async fn generate_after_window_only_cache_dropped_early_positions_replies_as_fresh_model_does() {
+    let previous_request: GenerationRequest = fixtures::create_request(
+        vec![
+            fixtures::create_message(Role::System, &fixtures::create_long_instruction()),
+            fixtures::create_message(Role::User, "Write one sentence about the sea."),
+        ],
+        None,
+        4,
+    );
+    let request: GenerationRequest = fixtures::create_request(
+        vec![fixtures::create_message(Role::User, "Name three colours of the rainbow, one per line.")],
+        None,
+        16,
+    );
+
+    let (generation, fresh_generation): (Generation, Generation) =
+        generate_after_previous_request_and_on_fresh_model(SlidingWindowCache::WindowOnly, &previous_request, &request).await;
+
+    assert_eq!(generation.reused_token_count, 0);
+    assert_eq!(generation.text, fresh_generation.text);
+}
+
+#[wasm_bindgen_test]
+async fn generate_rejects_request_exceeding_context_before_reporting_progress() {
+    let model: Model = load_test_model(SlidingWindowCache::Full).await;
+    let mut progress_report_count: usize = 0;
+
+    let generation_outcome: Result<Generation, GenerationError> = model
+        .generate(&fixtures::create_context_overflowing_grading_request(), |_: GenerationProgress| progress_report_count += 1)
+        .await;
+
+    assert!(matches!(generation_outcome, Err(GenerationError::Failed(_))));
+    assert_eq!(progress_report_count, 0);
+}
+
+#[wasm_bindgen_test]
 async fn generate_reports_prompt_progress_then_token_progress_in_order() {
-    let model: Model = load_test_model().await;
+    let model: Model = load_test_model(SlidingWindowCache::Full).await;
     let request: GenerationRequest = fixtures::create_grading_request("Eu sou cansado.", 24);
     let mut progress_reports: Vec<GenerationProgress> = Vec::new();
 
@@ -242,7 +308,7 @@ async fn generate_reports_prompt_progress_then_token_progress_in_order() {
 
 #[wasm_bindgen_test]
 async fn cancel_stops_generation_in_progress() {
-    let model: Model = load_test_model().await;
+    let model: Model = load_test_model(SlidingWindowCache::Full).await;
     let maximum_token_count: usize = 200;
     let mut generated_token_count_at_last_report: usize = 0;
 
@@ -261,7 +327,7 @@ async fn cancel_stops_generation_in_progress() {
 
 #[wasm_bindgen_test]
 async fn cancel_stops_generations_queued_before_it() {
-    let model: Model = load_test_model().await;
+    let model: Model = load_test_model(SlidingWindowCache::Full).await;
     let request: GenerationRequest = fixtures::create_long_story_request(200);
     let mut cancelled: bool = false;
     // Cancels once, since a later cancel could reach the queued generation after it starts.
@@ -284,7 +350,7 @@ async fn cancel_stops_generations_queued_before_it() {
 
 #[wasm_bindgen_test]
 async fn dropping_generate_future_stops_its_generation() {
-    let model: Model = load_test_model().await;
+    let model: Model = load_test_model(SlidingWindowCache::Full).await;
     let request: GenerationRequest = fixtures::create_long_story_request(200);
 
     let complete_generation: Generation = generate_ignoring_progress(&model, &request).await;
@@ -298,7 +364,7 @@ async fn dropping_generate_future_stops_its_generation() {
 
 #[wasm_bindgen_test]
 async fn generate_after_cancel_completes() {
-    let model: Model = load_test_model().await;
+    let model: Model = load_test_model(SlidingWindowCache::Full).await;
 
     model.cancel();
     let generation_outcome: Result<Generation, GenerationError> = model.generate(&fixtures::create_greeting_request(8), |_: GenerationProgress| {}).await;

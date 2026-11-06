@@ -61,4 +61,4 @@ cargo test
 ./scripts/test-browser.sh --safari
 ```
 
-`cargo test` runs the llama.cpp backend's tests in `tests/llama_cpp.rs`, which load the model that `scripts/setup.sh` fetches into `build/models/`. `scripts/test-browser.sh` runs the browser backend's tests in `tests/wllama.rs` against the same model, in headless Chrome or, with `--safari`, in Safari; Safari needs its WebDriver enabled once with `safaridriver --enable`.
+`cargo test` runs the llama.cpp backend's tests in `tests/llama_cpp.rs`, which load the model that `scripts/setup.sh` fetches into `build/models/`. `scripts/test-browser.sh` runs the browser backend's tests in `tests/wllama.rs` and `src/wllama/` against the same model, in headless Chrome or, with `--safari`, in Safari; Safari needs its WebDriver enabled once with `safaridriver --enable`.
