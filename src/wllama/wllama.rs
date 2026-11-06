@@ -9,6 +9,7 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::AbortController;
 
+use crate::chat_template::{ChatTemplate, SequenceTokens};
 use crate::gguf_vocabulary::{GgufVocabulary, VocabularyRead};
 use crate::wllama::abortable_operation::{AbortableOperation, OperationEvent};
 use crate::wllama::streamed_reply::StreamedReply;
@@ -25,7 +26,6 @@ use crate::{
     LoadOptions,
     LoadProgress,
     SlidingWindowCache,
-    chat_template_input,
     generation_checks,
     gguf_vocabulary,
 };
@@ -38,8 +38,6 @@ const PARALLEL_SEQUENCE_COUNT: u32 = 1;
 const PROMPT_BATCH_TOKEN_COUNT: u32 = 512;
 const INITIAL_VOCABULARY_PREFIX_BYTE_COUNT: u32 = 8 * 1024 * 1024;
 const VOCABULARY_PREFIX_GROWTH_FACTOR: u32 = 4;
-// The llama.cpp server requires a name for a JSON schema but does not use it.
-const JSON_SCHEMA_NAME: &str = "reply";
 
 minimer::impl_from_error!(Error, serde_json::Error);
 
@@ -56,6 +54,19 @@ struct LoadedContext {
     context_token_count: usize,
     #[serde(rename = "list_tokens_eog")]
     end_of_generation_token_ids: Vec<u32>,
+    /// Negative when the vocabulary has none.
+    #[serde(rename = "token_bos")]
+    beginning_of_sequence_token_id: i64,
+    /// Negative when the vocabulary has none.
+    #[serde(rename = "token_eos")]
+    end_of_sequence_token_id: i64,
+    #[serde(rename = "add_bos_token")]
+    tokenizer_adds_beginning_of_sequence: bool,
+    #[serde(rename = "add_eos_token")]
+    tokenizer_adds_end_of_sequence: bool,
+    /// Absent when the model file has no chat template.
+    #[serde(rename = "chat_template")]
+    chat_template_source: Option<String>,
 }
 
 /// A model loaded into its own wllama instance, which holds the model's cache between requests.
@@ -63,6 +74,7 @@ pub struct Model {
     wllama_instance: WllamaInstance,
     context_token_count: usize,
     control_token_texts: Vec<String>,
+    chat_template: ChatTemplate,
     generation_turn: Mutex<()>,
     cancellation_epoch: Cell<u64>,
     running_generation_abort_controller: RefCell<Option<AbortController>>,
@@ -87,10 +99,13 @@ impl Model {
             loaded_proportion: 1.0,
         });
 
+        let chat_template: ChatTemplate = create_chat_template(&loaded_context, &vocabulary)?;
+
         Ok(Model {
             wllama_instance,
             context_token_count: loaded_context.context_token_count,
             control_token_texts: vocabulary.control_token_texts(&loaded_context.end_of_generation_token_ids),
+            chat_template,
             generation_turn: Mutex::new(()),
             cancellation_epoch: Cell::new(0),
             running_generation_abort_controller: RefCell::new(None),
@@ -105,7 +120,8 @@ impl Model {
         self.check_cancellation(submitted_cancellation_epoch)?;
         check_no_control_token_text(&request.messages, &self.control_token_texts)?;
 
-        let mut completion: AbortableOperation<String, dyn FnMut(String)> = self.start_completion(request)?;
+        let prompt: String = self.chat_template.render_prompt(&request.messages)?;
+        let mut completion: AbortableOperation<String, dyn FnMut(String)> = self.start_completion(request, &prompt)?;
         let _running_generation: RunningGeneration = RunningGeneration::register(&self.running_generation_abort_controller, completion.abort_controller());
         let mut streamed_reply: StreamedReply = StreamedReply::new();
 
@@ -144,8 +160,8 @@ impl Model {
         self.wllama_instance.exit().await
     }
 
-    fn start_completion(&self, request: &GenerationRequest) -> Result<AbortableOperation<String, dyn FnMut(String)>, Error> {
-        let request_json: String = create_request_json(request);
+    fn start_completion(&self, request: &GenerationRequest, prompt: &str) -> Result<AbortableOperation<String, dyn FnMut(String)>, Error> {
+        let request_json: String = create_request_json(request, prompt);
 
         AbortableOperation::start(
             |chunk_sender: UnboundedSender<String>| {
@@ -271,10 +287,6 @@ async fn load_model(
         "n_parallel": PARALLEL_SEQUENCE_COUNT,
         "swa_full": sliding_window_cache == SlidingWindowCache::Full,
         "n_batch": PROMPT_BATCH_TOKEN_COUNT,
-        // Formats prompts with the model's own chat template.
-        "jinja": true,
-        // Keeps a reasoning model's thinking out of the reply text.
-        "reasoning_format": "deepseek",
     });
     let loaded_context_json: JsValue =
         wllama_bridge::settle(wllama_bridge::load_model(wllama_instance.wllama(), model_files, &load_parameters.to_string())).await?;
@@ -286,11 +298,11 @@ async fn load_model(
     Ok(loaded_context)
 }
 
-fn create_request_json(request: &GenerationRequest) -> String {
+/// Completes the prompt this crate templated, so both backends read the same prompt under the same schema grammar.
+fn create_request_json(request: &GenerationRequest, prompt: &str) -> String {
     // Turns off every sampler but temperature, which the server and the model's metadata would otherwise enable.
     let mut request_json: serde_json::Value = serde_json::json!({
-        "messages": chat_template_input::create_messages_json(&request.messages),
-        "chat_template_kwargs": chat_template_input::create_template_arguments_json(),
+        "prompt": prompt,
         "temperature": request.temperature,
         "seed": request.seed,
         "max_tokens": request.maximum_token_count,
@@ -304,16 +316,26 @@ fn create_request_json(request: &GenerationRequest) -> String {
     });
 
     if let Some(json_schema) = &request.json_schema {
-        request_json["response_format"] = serde_json::json!({
-            "type": "json_schema",
-            "json_schema": {
-                "name": JSON_SCHEMA_NAME,
-                "schema": json_schema,
-            },
-        });
+        request_json["json_schema"] = json_schema.clone();
     }
 
     request_json.to_string()
+}
+
+fn create_chat_template(loaded_context: &LoadedContext, vocabulary: &GgufVocabulary) -> Result<ChatTemplate, Error> {
+    let sequence_tokens: SequenceTokens = SequenceTokens {
+        beginning_text: get_token_text(vocabulary, loaded_context.beginning_of_sequence_token_id),
+        end_text: get_token_text(vocabulary, loaded_context.end_of_sequence_token_id),
+        tokenizer_adds_beginning: loaded_context.tokenizer_adds_beginning_of_sequence,
+        tokenizer_adds_end: loaded_context.tokenizer_adds_end_of_sequence,
+    };
+
+    ChatTemplate::new(loaded_context.chat_template_source.clone(), sequence_tokens)
+}
+
+fn get_token_text(vocabulary: &GgufVocabulary, token_id: i64) -> String {
+    let token_text: Option<&str> = u32::try_from(token_id).ok().and_then(|token_id: u32| vocabulary.token_text(token_id));
+    token_text.unwrap_or_default().to_string()
 }
 
 /// The llama.cpp server tokenizes the templated prompt with its control tokens parsed, so control-token text in a message would forge turns.

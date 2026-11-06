@@ -1,6 +1,6 @@
 //! Runs a GGUF language model with one API on every target.
 
-mod chat_template_input;
+mod chat_template;
 mod error;
 mod generation;
 mod generation_checks;

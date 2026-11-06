@@ -19,7 +19,8 @@ use llama_cpp_2::{LlamaContextLoadError, LlamaModelLoadError, LogOptions};
 
 use crate::generation_checks;
 use crate::generation_checks::ReplyEnding;
-use crate::llama_cpp::chat_template::ChatTemplate;
+use crate::chat_template::ChatTemplate;
+use crate::llama_cpp::model_chat_template;
 use crate::llama_cpp::prompt_cache::PromptCache;
 use crate::llama_cpp::reply_text::ReplyText;
 use crate::llama_cpp::schema_constraint::SchemaConstraints;
@@ -170,7 +171,7 @@ impl<'model> GenerationSession<'model> {
             .with_n_batch(u32::try_from(PROMPT_BATCH_TOKEN_COUNT)?)
             .with_swa_full(keep_whole_sliding_window_cache);
         let context: LlamaContext<'model> = model.new_context(llama_backend, context_parameters)?;
-        let chat_template: ChatTemplate = ChatTemplate::from_model(model)?;
+        let chat_template: ChatTemplate = model_chat_template::read_chat_template(model)?;
 
         Ok(GenerationSession {
             model,
@@ -244,7 +245,7 @@ impl<'model> GenerationSession<'model> {
     fn tokenize_prompt(&self, messages: &[ChatMessage]) -> Result<Vec<LlamaToken>, Error> {
         self.check_no_control_token_text(messages)?;
 
-        let prompt: String = self.chat_template.render_prompt(self.model, messages)?;
+        let prompt: String = self.chat_template.render_prompt(messages)?;
         let prompt_tokens: Vec<LlamaToken> = self.model.vocab().tokenize(prompt.as_bytes(), true, true);
 
         if prompt_tokens.is_empty() {

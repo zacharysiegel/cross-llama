@@ -167,19 +167,10 @@ async fn generate_with_json_schema_fails_when_reply_reaches_maximum_before_compl
 #[wasm_bindgen_test]
 async fn generate_with_json_schema_succeeds_when_reply_completes_at_maximum() {
     let model: Model = load_test_model(SlidingWindowCache::Full).await;
-    let mut reply_text_token_count: usize = 0;
-    let unlimited_generation: Generation = model
-        .generate(&fixtures::create_capital_question_request(100), |progress: GenerationProgress| {
-            if let GenerationProgress::Generating { generated_token_count, .. } = progress {
-                reply_text_token_count = generated_token_count;
-            }
-        })
-        .await
-        .unwrap();
-    // The server may wrap the JSON in a code fence, which it counts but leaves out of the text, so the count comes from the last text.
-    let request: GenerationRequest = fixtures::create_capital_question_request(reply_text_token_count);
+    let unlimited_generation: Generation = generate_ignoring_progress(&model, &fixtures::create_capital_question_request(100)).await;
+    let request: GenerationRequest = fixtures::create_capital_question_request(unlimited_generation.generated_token_count);
     // Fails only if the counted tokens are exactly the reply's, so the first request does end at its maximum.
-    let one_token_short_request: GenerationRequest = fixtures::create_capital_question_request(reply_text_token_count - 1);
+    let one_token_short_request: GenerationRequest = fixtures::create_capital_question_request(unlimited_generation.generated_token_count - 1);
 
     let generation: Generation = generate_ignoring_progress(&model, &request).await;
     let one_token_short_outcome: Result<Generation, GenerationError> = model.generate(&one_token_short_request, |_: GenerationProgress| {}).await;

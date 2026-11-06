@@ -56,6 +56,11 @@ pub struct GgufVocabulary {
 }
 
 impl GgufVocabulary {
+    pub fn token_text(&self, token_id: u32) -> Option<&str> {
+        let token_index: usize = usize::try_from(token_id).ok()?;
+        self.token_texts.get(token_index).map(String::as_str)
+    }
+
     /// The texts that tokenizing a templated prompt reads as control tokens, so message text must not contain them.
     pub fn control_token_texts(&self, end_of_generation_token_ids: &[u32]) -> Vec<String> {
         let mut control_token_texts: Vec<String> = Vec::new();
