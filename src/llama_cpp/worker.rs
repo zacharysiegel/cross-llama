@@ -11,21 +11,15 @@ use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{LlamaChatMessage, LlamaChatTemplate, LlamaModel};
+use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
 use llama_cpp_2::vocab::LlamaVocab;
-use llama_cpp_2::{
-    ApplyChatTemplateError,
-    ChatTemplateError,
-    LlamaContextLoadError,
-    LlamaModelLoadError,
-    LogOptions,
-    NewLlamaChatMessageError,
-};
+use llama_cpp_2::{LlamaContextLoadError, LlamaModelLoadError, LogOptions};
 
 use crate::generation_checks;
 use crate::generation_checks::ReplyEnding;
+use crate::llama_cpp::chat_template::ChatTemplate;
 use crate::llama_cpp::prompt_cache::PromptCache;
 use crate::llama_cpp::reply_text::ReplyText;
 use crate::llama_cpp::schema_constraint::SchemaConstraints;
@@ -50,9 +44,6 @@ const LAST_OUTPUT_INDEX: i32 = -1;
 
 minimer::impl_from_error!(Error, LlamaModelLoadError);
 minimer::impl_from_error!(Error, LlamaContextLoadError);
-minimer::impl_from_error!(Error, ChatTemplateError);
-minimer::impl_from_error!(Error, ApplyChatTemplateError);
-minimer::impl_from_error!(Error, NewLlamaChatMessageError);
 
 pub enum WorkerEvent<Progress, Outcome> {
     Progress(Progress),
@@ -120,7 +111,7 @@ fn initialize_llama_backend() -> Result<LlamaBackend, String> {
     LlamaBackend::init().map_err(|initialization_error| initialization_error.to_string())
 }
 
-fn get_llama_backend() -> Result<&'static LlamaBackend, Error> {
+pub fn get_llama_backend() -> Result<&'static LlamaBackend, Error> {
     let initialization: &'static Result<LlamaBackend, String> = &LLAMA_BACKEND;
 
     initialization
@@ -161,7 +152,7 @@ fn load_model(model_path: &Path, load_event_sender: &LoadEventSender) -> Result<
 struct GenerationSession<'model> {
     model: &'model LlamaModel,
     context: LlamaContext<'model>,
-    chat_template: LlamaChatTemplate,
+    chat_template: ChatTemplate,
     batch: LlamaBatch<'static>,
     prompt_cache: PromptCache,
     schema_constraints: SchemaConstraints,
@@ -179,7 +170,7 @@ impl<'model> GenerationSession<'model> {
             .with_n_batch(u32::try_from(PROMPT_BATCH_TOKEN_COUNT)?)
             .with_swa_full(keep_whole_sliding_window_cache);
         let context: LlamaContext<'model> = model.new_context(llama_backend, context_parameters)?;
-        let chat_template: LlamaChatTemplate = model.chat_template(None)?;
+        let chat_template: ChatTemplate = ChatTemplate::from_model(model)?;
 
         Ok(GenerationSession {
             model,
@@ -253,11 +244,7 @@ impl<'model> GenerationSession<'model> {
     fn tokenize_prompt(&self, messages: &[ChatMessage]) -> Result<Vec<LlamaToken>, Error> {
         self.check_no_control_token_text(messages)?;
 
-        let chat_messages: Vec<LlamaChatMessage> = messages
-            .iter()
-            .map(create_llama_chat_message)
-            .collect::<Result<Vec<LlamaChatMessage>, Error>>()?;
-        let prompt: String = self.model.apply_chat_template(&self.chat_template, &chat_messages, true)?;
+        let prompt: String = self.chat_template.render_prompt(self.model, messages)?;
         let prompt_tokens: Vec<LlamaToken> = self.model.vocab().tokenize(prompt.as_bytes(), true, true);
 
         if prompt_tokens.is_empty() {
@@ -385,11 +372,6 @@ impl GenerationMonitor<'_> {
         let _ = self.event_sender.unbounded_send(WorkerEvent::Progress(progress));
         self.check_cancellation()
     }
-}
-
-fn create_llama_chat_message(message: &ChatMessage) -> Result<LlamaChatMessage, Error> {
-    let llama_chat_message: LlamaChatMessage = LlamaChatMessage::new(message.role.chat_template_name().to_string(), message.text.clone())?;
-    Ok(llama_chat_message)
 }
 
 fn create_token_choice_samplers(temperature: f32, seed: u32) -> Vec<LlamaSampler> {
