@@ -63,6 +63,24 @@ fn create_request(messages: Vec<ChatMessage>, json_schema: Option<serde_json::Va
     }
 }
 
+fn create_capital_question_request(maximum_token_count: usize) -> GenerationRequest {
+    let json_schema: serde_json::Value = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "answer": { "type": "string", "maxLength": 40 },
+            "confident": { "type": "boolean" },
+        },
+        "required": ["answer", "confident"],
+        "additionalProperties": false,
+    });
+
+    create_request(
+        vec![create_message(Role::User, "What is the capital of Portugal? Reply in JSON.")],
+        Some(json_schema),
+        maximum_token_count,
+    )
+}
+
 fn generate_ignoring_progress(model: &Model, request: &GenerationRequest) -> Generation {
     executor::block_on(model.generate(request, |_: GenerationProgress| {})).unwrap()
 }
@@ -111,20 +129,7 @@ fn generate_returns_plain_reply_within_maximum() {
 #[test]
 fn generate_with_json_schema_returns_matching_json() {
     let model: Model = load_test_model(SlidingWindowCache::Full);
-    let json_schema: serde_json::Value = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "answer": { "type": "string", "maxLength": 40 },
-            "confident": { "type": "boolean" },
-        },
-        "required": ["answer", "confident"],
-        "additionalProperties": false,
-    });
-    let request: GenerationRequest = create_request(
-        vec![create_message(Role::User, "What is the capital of Portugal? Reply in JSON.")],
-        Some(json_schema),
-        100,
-    );
+    let request: GenerationRequest = create_capital_question_request(100);
 
     let generation: Generation = generate_ignoring_progress(&model, &request);
     let reply: serde_json::Value = serde_json::from_str(&generation.text).unwrap();
@@ -133,6 +138,27 @@ fn generate_with_json_schema_returns_matching_json() {
     assert_eq!(reply_object.len(), 2);
     assert!(reply_object["answer"].as_str().is_some_and(|answer| answer.chars().count() <= 40));
     assert!(reply_object["confident"].is_boolean());
+}
+
+#[test]
+fn generate_with_json_schema_fails_when_reply_reaches_maximum_before_completing() {
+    let model: Model = load_test_model(SlidingWindowCache::Full);
+    let request: GenerationRequest = create_capital_question_request(3);
+
+    let generation_outcome: Result<Generation, GenerationError> = executor::block_on(model.generate(&request, |_: GenerationProgress| {}));
+
+    assert!(matches!(generation_outcome, Err(GenerationError::Failed(_))));
+}
+
+#[test]
+fn generate_with_json_schema_succeeds_when_reply_completes_at_maximum() {
+    let model: Model = load_test_model(SlidingWindowCache::Full);
+    let unlimited_generation: Generation = generate_ignoring_progress(&model, &create_capital_question_request(100));
+    let request: GenerationRequest = create_capital_question_request(unlimited_generation.generated_token_count);
+
+    let generation: Generation = generate_ignoring_progress(&model, &request);
+
+    assert_eq!(generation.text, unlimited_generation.text);
 }
 
 #[test]
