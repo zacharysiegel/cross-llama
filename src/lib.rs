@@ -3,7 +3,7 @@
 mod error;
 mod generation;
 mod generation_checks;
-// Only the browser backend reads the vocabulary from the model file; host tests cover it.
+// unused by the llama.cpp backend, which reads control tokens through llama.cpp; host tests still build it
 #[cfg(any(target_arch = "wasm32", test))]
 mod gguf_vocabulary;
 // llama-cpp-sys-2 compiles llama.cpp with CMake and a native C++ compiler, which cannot target wasm32.
