@@ -258,18 +258,15 @@ impl<'bytes> PrefixReader<'bytes> {
 mod tests {
     use std::fs::File;
     use std::io::Read;
-    use std::path::PathBuf;
 
-    use crate::gguf_vocabulary;
     use crate::gguf_vocabulary::VocabularyRead;
+    use crate::{gguf_vocabulary, test_model};
 
-    const TEST_MODEL_RELATIVE_PATH: &str = "build/models/gemma-3-270m-it-Q8_0.gguf";
     const TEST_MODEL_PREFIX_BYTE_COUNT: u64 = 16 * 1024 * 1024;
 
     fn read_test_model_prefix(byte_count: u64) -> Vec<u8> {
-        let model_path: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(TEST_MODEL_RELATIVE_PATH);
         let mut prefix: Vec<u8> = Vec::new();
-        File::open(model_path).unwrap().take(byte_count).read_to_end(&mut prefix).unwrap();
+        File::open(test_model::get_test_model_path()).unwrap().take(byte_count).read_to_end(&mut prefix).unwrap();
         prefix
     }
 

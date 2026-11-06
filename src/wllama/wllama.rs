@@ -25,6 +25,7 @@ use crate::{
     LoadOptions,
     LoadProgress,
     SlidingWindowCache,
+    chat_template_input,
     generation_checks,
     gguf_vocabulary,
 };
@@ -270,9 +271,10 @@ async fn load_model(
         "n_parallel": PARALLEL_SEQUENCE_COUNT,
         "swa_full": sliding_window_cache == SlidingWindowCache::Full,
         "n_batch": PROMPT_BATCH_TOKEN_COUNT,
-        "jinja": false,
-        // Leaves a reasoning model's thinking in the reply text.
-        "reasoning_format": "none",
+        // Formats prompts with the model's own chat template.
+        "jinja": true,
+        // Keeps a reasoning model's thinking out of the reply text.
+        "reasoning_format": "deepseek",
     });
     let loaded_context_json: JsValue =
         wllama_bridge::settle(wllama_bridge::load_model(wllama_instance.wllama(), model_files, &load_parameters.to_string())).await?;
@@ -285,19 +287,10 @@ async fn load_model(
 }
 
 fn create_request_json(request: &GenerationRequest) -> String {
-    let messages: Vec<serde_json::Value> = request
-        .messages
-        .iter()
-        .map(|message| {
-            serde_json::json!({
-                "role": message.role.chat_template_name(),
-                "content": message.text,
-            })
-        })
-        .collect();
     // Turns off every sampler but temperature, which the server and the model's metadata would otherwise enable.
     let mut request_json: serde_json::Value = serde_json::json!({
-        "messages": messages,
+        "messages": chat_template_input::create_messages_json(&request.messages),
+        "chat_template_kwargs": chat_template_input::create_template_arguments_json(),
         "temperature": request.temperature,
         "seed": request.seed,
         "max_tokens": request.maximum_token_count,

@@ -1,3 +1,4 @@
+mod chat_template;
 mod llama_cpp;
 mod prompt_cache;
 mod reply_text;
