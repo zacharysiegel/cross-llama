@@ -137,9 +137,14 @@ async function requestWebGpuAdapter() {
   return adapter && !isFallbackAdapter ? adapter : null;
 }
 
-// wllama 3.8.1's rule for switching to its compatibility build.
+// wllama 3.8.1's rule for switching to its compatibility build; setCompat's default mode keeps Firefox on the default build.
 function needsWllamaCompatibilityBuild() {
-  return !('Suspending' in WebAssembly) || !supportsWebAssemblyMemory64();
+  return (!('Suspending' in WebAssembly) || !supportsWebAssemblyMemory64()) && !isFirefox();
+}
+
+// wllama's own user-agent test.
+function isFirefox() {
+  return /Firefox\/([0-9\.]+)(?:\s|$)/.test(navigator.userAgent);
 }
 
 function supportsWebAssemblyMemory64() {

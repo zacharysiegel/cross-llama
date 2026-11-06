@@ -2,7 +2,8 @@
 
 # Reports, for each major browser's current release, whether it supports the two WebAssembly features wllama's
 # default build needs: 64-bit memory (memory64) and JavaScript Promise Integration (jspi). A browser that lacks
-# either runs wllama's compatibility build. The source is MDN's browser compatibility data.
+# either runs wllama's compatibility build, except Firefox, which wllama keeps on its default build without WebGPU.
+# The source is MDN's browser compatibility data.
 #
 # Usage:
 #   ./scripts/check-browser-features.sh
@@ -55,7 +56,9 @@ feature_report="$(jq --raw-output '
         $current_release,
         $memory64,
         $jspi,
-        (if ($memory64 | startswith("yes")) and ($jspi | startswith("yes")) then "default" else "compatibility" end)
+        (if ($memory64 | startswith("yes")) and ($jspi | startswith("yes")) then "default"
+         elif ($browser | startswith("firefox")) then "default"
+         else "compatibility" end)
       ]
     | @tsv
 ' "${COMPATIBILITY_DATA_PATH}")"

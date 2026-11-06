@@ -27,7 +27,8 @@ pub struct WebGpuAdapter {
     pub maximum_buffer_byte_count: u64,
 }
 
-/// The wllama build the browser gets: the compatibility build when it lacks JSPI or WebAssembly 64-bit memory.
+/// The wllama build the browser gets: the compatibility build when it lacks JSPI or WebAssembly 64-bit memory, except
+/// on Firefox.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WllamaBuildKind {
