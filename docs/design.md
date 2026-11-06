@@ -11,11 +11,13 @@ model.cancel();
 model.unload().await?;
 ```
 
-- `ModelSource`: a file path on targets other than `wasm32`; a URL in the browser.
+- `ModelSource`: a file path on targets other than `wasm32`; in the browser, the model's URL and the URL of the directory holding wllama's files.
+  - The wllama directory was planned for `LoadOptions`; it moved to `ModelSource`, the one type that already differs by target, so `LoadOptions` stays the same everywhere.
 - `LoadOptions`:
   - context length in tokens
   - whether to keep the whole sliding-window cache, which lets a shared prompt prefix be reused across requests (llama.cpp's `swa_full`)
 - `LoadProgress`: `Downloading` with bytes downloaded and total (the browser backend only), then `Loading` with the proportion loaded.
+  - wllama reports no progress while loading, so the browser backend reports `Loading` at 0 and at 1 only.
 - `GenerationRequest`:
   - messages, each a role and text; the model's own chat template formats them; text containing the model's control tokens is rejected, so a message cannot end its turn and forge another
   - an optional JSON schema the reply must match
@@ -30,7 +32,9 @@ model.unload().await?;
   - `Generating`: tokens generated so far, the request's maximum, and the reply text so far
 - `generate` returns `GenerationError::Cancelled` or `GenerationError::Failed(Error)`, so a caller can tell a cancellation from a failure.
   - A reply that reaches the maximum tokens unfinished is a failure when a schema is set, because its JSON is incomplete; without a schema it returns the text so far.
+    - Both backends share the check: a schema reply at the maximum fails unless it parses as JSON. The llama.cpp server inside wllama stops at the maximum without sampling the end token, and its JSON grammar allows trailing whitespace, so a complete reply can still reach the maximum.
   - A request whose prompt plus maximum reply does not fit in the context fails before reading the prompt.
+    - wllama does not expose its tokenizer, so the browser backend checks on wllama's first prompt progress report, which comes before it reads the prompt.
 - `cancel` stops the generation in progress and any queued before the call; dropping a `generate` future also stops its generation.
 - One generation runs at a time per `Model`; a second call waits for the first.
 - `unload` frees the model and resolves once its memory is freed; dropping a `Model` frees it too, but blocks the dropping thread until the model's worker thread has finished its current batch and freed the model.
@@ -58,13 +62,22 @@ Each backend is a module selected by `#[cfg]`, re-exported as the same public ty
 
 ### `wllama`, for `wasm32` in the browser
 
-- Calls wllama's JavaScript API through `wasm-bindgen` imports (`#[wasm_bindgen] extern "C"` declarations) of a small JavaScript module shipped in this crate.
-- Loading: `loadModelFromUrl`, which caches the model in the browser's storage, with progress; `n_gpu_layers` set to keep every layer on the GPU through WebGPU; `swa_full` from `LoadOptions`.
+- Calls wllama's JavaScript API through `wasm-bindgen` imports (`#[wasm_bindgen] extern "C"` declarations) of a small JavaScript module shipped in this crate (`src/wllama/wllama_bridge.js`).
+  - The bridge imports wllama from the directory in `ModelSource` at run time and passes requests and streamed chunks across as JSON strings.
+  - Each `Model` has its own wllama instance; `unload` and dropping the `Model` call wllama's `exit`, which ends its worker.
+- Loading: wllama's model manager downloads the model into the browser's storage, or finds it there, reporting `Downloading`; then `loadModel` with `n_gpu_layers` set to keep every layer on the GPU through WebGPU, `swa_full` from `LoadOptions`, and one sequence (`n_parallel`), so each request can reuse the prefix the previous one left in the cache.
+  - The design planned `loadModelFromUrl`, which does both steps at once; splitting them separates `Downloading` from `Loading` and lets the backend read the vocabulary between them.
+- Control tokens: wllama does not expose its tokenizer, so the backend reads the token texts and types from the GGUF file's metadata in wllama's cache and rejects a message containing the text of a control, unknown or end-of-generation token. This matches the tokens llama.cpp parses as special in a templated prompt.
 - Generation: `createChatCompletion` with `response_format` set to the JSON schema; wllama reuses the cached prompt prefix itself.
-- Progress: `stream` with `onData` and `return_progress`; each chunk carries either `prompt_progress` (`total`, `cache`, `processed`) or the next piece of the reply.
+- Progress: `stream` with `onData`, `return_progress` and `timings_per_token`; each chunk carries either `prompt_progress` (`total`, `cache`, `processed`) or the next piece of the reply, with the timings so far.
+  - `ReadingPrompt` comes after each batch wllama reads, starting with one whose read count is the reused count.
+  - `Generating` comes with each piece of reply text; a token with no text of its own, such as whitespace the server holds back, reports nothing, so the counts can skip.
+  - `Generation`'s counts and durations come from the final timings; the server counts the end token as generated, which the backend subtracts.
+- Cancellation: each generation has an `AbortController`, which `cancel` and dropping the `generate` future abort; generations queued before a `cancel` see the cancellation when their turn comes.
+- `Model` holds JavaScript handles, so on `wasm32` it is neither `Send` nor `Sync`.
 - Builds:
   - wllama uses its default build when the browser has WebAssembly 64-bit memory and JSPI, and switches to its compatibility build by itself otherwise.
-  - The app serves both builds' files itself; the crate tells wllama where the compatibility build is (`setCompat`) instead of letting it fetch from a CDN.
+  - The app serves both builds' files itself; the bridge tells wllama where the compatibility build is (`setCompat`) instead of letting it fetch from a CDN.
   - `scripts/check-browser-features.sh` reports which browsers' current releases get which build.
 - Measured on an M4 Max with gemma3 12B Q4_K_M:
   - Chrome, default build: 124 tokens/s reading the prompt, 27 generating; p95 3.0 s per graded answer with prefix reuse.
@@ -73,17 +86,21 @@ Each backend is a module selected by `#[cfg]`, re-exported as the same public ty
 
 ## Assets the app serves in the browser
 
-- wllama's JavaScript and WebAssembly files, default and compatibility builds, at paths the app passes in `LoadOptions`.
+- wllama's JavaScript and WebAssembly files, default and compatibility builds, in the directory whose URL the app passes in `ModelSource`.
   - `scripts/fetch-wllama.sh <directory>` writes them, from the pinned npm release, after checking each package against its published integrity hash; the app runs it as part of its build and serves the directory.
   - They are not committed to this repository, and the crate's build script does not download them: a build script writes only to Cargo's output directory, which the app does not serve, and downloading there would break offline builds.
-- The model file, at the URL in `ModelSource`.
+- The model file, at the URL in `ModelSource`, with `Content-Length`; without it wllama cannot check its cached copy and downloads the model again on every load.
 - Cross-origin isolation headers (`Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy`), which wllama's multithreaded build needs.
 
 ## Testing
 
 - Shared request and response types: host unit tests.
 - `llama_cpp`: integration tests that load a small GGUF (gemma-3-270m), generate with and without a schema, and check prefix reuse and cancellation.
-- `wllama`: `wasm-bindgen-test` in a headless Chrome, with the same tests against the same small model, since this backend's code only runs in a browser.
+- `wllama`: `wasm-bindgen-test` in a real browser, with the same tests against the same small model, since this backend's code only runs in a browser.
+  - `scripts/test-browser.sh` runs them in headless Chrome, or in Safari with `--safari`. wasm-bindgen-test's runner serves the repository root, so the tests load `build/wllama/` and `build/models/` from it, with the cross-origin isolation headers it sends by default.
+  - Safari runs each test in a page of its own, because loading a model into a page that had already loaded others hung inside wllama's compatibility build (wllama 3.8.1, Safari 26.6.2; not traced further). One reload, as the unload test does, works.
+  - The runner sends large files without `Content-Length`, so in these tests wllama reports no download total and downloads the model again for every load.
+- Shared request and fixture helpers for both backends' tests live in `tests/helpers/`.
 
 ## Out of scope for the first version
 
