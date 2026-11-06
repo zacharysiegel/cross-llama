@@ -228,6 +228,19 @@ fn generate_after_window_only_cache_dropped_early_positions_replies_as_fresh_mod
 }
 
 #[test]
+fn generate_rejects_request_exceeding_context_before_reporting_progress() {
+    let model: Model = load_test_model(SlidingWindowCache::Full);
+    let request: GenerationRequest = fixtures::create_context_overflowing_grading_request();
+    let mut progress_report_count: usize = 0;
+
+    let generation_outcome: Result<Generation, GenerationError> =
+        executor::block_on(model.generate(&request, |_: GenerationProgress| progress_report_count += 1));
+
+    assert!(matches!(generation_outcome, Err(GenerationError::Failed(_))));
+    assert_eq!(progress_report_count, 0);
+}
+
+#[test]
 fn generate_reports_prompt_progress_then_token_progress_in_order() {
     let model: Model = load_test_model(SlidingWindowCache::Full);
     let request: GenerationRequest = fixtures::create_request(
