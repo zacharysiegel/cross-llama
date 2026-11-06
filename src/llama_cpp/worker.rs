@@ -24,6 +24,8 @@ use llama_cpp_2::{
     NewLlamaChatMessageError,
 };
 
+use crate::generation_checks;
+use crate::generation_checks::ReplyEnding;
 use crate::llama_cpp::prompt_cache::PromptCache;
 use crate::llama_cpp::reply_text::ReplyText;
 use crate::llama_cpp::schema_constraint::SchemaConstraints;
@@ -169,8 +171,7 @@ struct GenerationSession<'model> {
 impl<'model> GenerationSession<'model> {
     fn prepare(model: &'model LlamaModel, load_options: &LoadOptions, cancellation_epoch: Arc<AtomicU64>) -> Result<Self, Error> {
         let llama_backend: &LlamaBackend = get_llama_backend()?;
-        let context_token_count: NonZeroU32 = NonZeroU32::new(load_options.context_token_count)
-            .ok_or_else(|| Error::new("the context must hold at least one token"))?;
+        let context_token_count: NonZeroU32 = load_options.nonzero_context_token_count()?;
         let keep_whole_sliding_window_cache: bool = load_options.sliding_window_cache == SlidingWindowCache::Full;
 
         let context_parameters: LlamaContextParams = LlamaContextParams::default()
@@ -237,7 +238,7 @@ impl<'model> GenerationSession<'model> {
         let reply: Reply = self.generate_reply(&mut sampler, request.maximum_token_count, monitor)?;
         let generating_duration: Duration = generating_started_at.elapsed();
 
-        check_reply_completes_json_value(request, &reply)?;
+        generation_checks::check_reply_completes_json_value(request, &reply.text, reply.ending)?;
 
         Ok(Generation {
             text: reply.text,
@@ -284,15 +285,7 @@ impl<'model> GenerationSession<'model> {
 
     fn check_context_capacity(&self, prompt_token_count: usize, maximum_token_count: usize) -> Result<(), Error> {
         let context_token_count: usize = usize::try_from(self.context.n_ctx())?;
-        let required_token_count: usize = prompt_token_count.saturating_add(maximum_token_count);
-
-        if required_token_count > context_token_count {
-            return Err(Error::new(&format!(
-                "the prompt's {prompt_token_count} tokens and up to {maximum_token_count} reply tokens exceed the context of {context_token_count} tokens",
-            )));
-        }
-
-        Ok(())
+        generation_checks::check_context_capacity(prompt_token_count, maximum_token_count, context_token_count)
     }
 
     fn create_sampler(&mut self, request: &GenerationRequest) -> Result<LlamaSampler, Error> {
@@ -366,25 +359,6 @@ struct Reply {
     text: String,
     generated_token_count: usize,
     ending: ReplyEnding,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ReplyEnding {
-    EndOfGeneration,
-    MaximumTokenCount,
-}
-
-fn check_reply_completes_json_value(request: &GenerationRequest, reply: &Reply) -> Result<(), Error> {
-    let constrained_by_json_schema: bool = request.json_schema.is_some();
-
-    if constrained_by_json_schema && reply.ending == ReplyEnding::MaximumTokenCount {
-        return Err(Error::new(&format!(
-            "the reply reached the maximum of {} tokens before completing the JSON value its schema requires",
-            request.maximum_token_count,
-        )));
-    }
-
-    Ok(())
 }
 
 struct GenerationMonitor<'job> {
