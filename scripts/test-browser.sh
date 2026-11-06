@@ -1,5 +1,6 @@
 #!/bin/zsh
-# Runs the browser backend's tests (tests/wllama.rs) in a real browser, through wasm-bindgen-test's runner, which serves
+# Runs the browser backend's tests (tests/wllama.rs and the unit tests under src/wllama/) in a real browser, through
+# wasm-bindgen-test's runner, which serves
 # the repository root, including build/wllama/ and build/models/, with the cross-origin isolation headers wllama's
 # multithreaded build needs.
 #
@@ -56,26 +57,66 @@ case "${browser}" in
         ;;
 esac
 
+readonly CARGO_TEST_TARGET_SELECTIONS=(--lib --test=wllama)
+
 function run_browser_tests {
-    cargo test --target wasm32-unknown-unknown --test wllama -- "$@"
+    cargo test --target wasm32-unknown-unknown "${CARGO_TEST_TARGET_SELECTIONS[@]}" -- "$@"
+}
+
+function run_target_browser_tests {
+    local cargo_test_target_selection="$1"
+    shift
+    cargo test --target wasm32-unknown-unknown "${cargo_test_target_selection}" -- "$@"
+}
+
+# Drops the test-name filter, which the listing has already applied.
+function print_options_without_filter {
+    while test "$#" -gt 0; do
+        case "$1" in
+            --skip|--format)
+                printf '%s\n' "$1" "$2"
+                shift 2
+                ;;
+            -*)
+                printf '%s\n' "$1"
+                shift
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
 }
 
 function run_each_browser_test_in_own_page {
-    local test_listing
-    test_listing=$(run_browser_tests --list "$@" 2>/dev/null)
-    local test_names=("${(@f)$(echo "${test_listing}" | sed -n 's/: test$//p')}")
+    local test_options=("${(@f)$(print_options_without_filter "$@")}")
+    test_options=("${(@)test_options:#}")
+    local test_count=0
     local failed_test_names=()
+    local test_listing
 
-    for test_name in "${test_names[@]}"; do
-        local test_status=0
-        run_browser_tests --exact "${test_name}" || test_status=$?
+    for cargo_test_target_selection in "${CARGO_TEST_TARGET_SELECTIONS[@]}"; do
+        test_listing=$(run_target_browser_tests "${cargo_test_target_selection}" --list "$@")
+        local test_names=("${(@f)$(echo "${test_listing}" | sed -n 's/: test$//p')}")
+        test_names=("${(@)test_names:#}")
 
-        if test "${test_status}" -ne 0; then
-            failed_test_names+=("${test_name}")
-        fi
+        for test_name in "${test_names[@]}"; do
+            local test_status=0
+            run_target_browser_tests "${cargo_test_target_selection}" --exact "${test_name}" "${test_options[@]}" || test_status=$?
+            test_count=$((test_count + 1))
+
+            if test "${test_status}" -ne 0; then
+                failed_test_names+=("${test_name}")
+            fi
+        done
     done
 
-    echo "${#test_names[@]} tests, each in its own page; ${#failed_test_names[@]} failed"
+    if test "${test_count}" -eq 0; then
+        echo "No tests match the arguments: $*"
+        exit 1
+    fi
+
+    echo "${test_count} tests, each in its own page; ${#failed_test_names[@]} failed"
 
     if test "${#failed_test_names[@]}" -ne 0; then
         printf '  %s\n' "${failed_test_names[@]}"
