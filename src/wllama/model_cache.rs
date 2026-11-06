@@ -1,4 +1,5 @@
 use futures::channel::mpsc::UnboundedSender;
+use js_sys::Promise;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -60,7 +61,12 @@ pub(crate) async fn download_model_files(
                 let _ = progress_sender.unbounded_send(progress);
             })
         },
-        |abort_signal, on_progress| wllama_bridge::download_model(model_manager, model_lock.model_url(), abort_signal, on_progress),
+        |abort_signal, on_progress| {
+            let download: Promise = wllama_bridge::download_model(model_manager, model_lock.model_url(), abort_signal, on_progress);
+            // An aborted download still writes its file until it settles.
+            model_lock.hold_until_settled(&download);
+            download
+        },
     )?;
 
     loop {
@@ -90,8 +96,6 @@ fn create_download_progress(downloaded_byte_count: f64, total_byte_count: f64) -
 mod tests {
     use futures::future;
     use futures::future::Either;
-    use js_sys::Promise;
-    use wasm_bindgen::prelude::*;
     use wasm_bindgen_futures::JsFuture;
     use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -99,6 +103,7 @@ mod tests {
     use crate::wllama::model_cache;
     use crate::wllama::model_cache::DownloadProgress;
     use crate::wllama::model_lock::ModelLock;
+    use crate::wllama::test_sleep;
     use crate::wllama::wllama::ModelSource;
 
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
@@ -107,11 +112,6 @@ mod tests {
     const SMALL_MODEL_URL: &str = "/tests/data/empty.gguf";
     const WLLAMA_DIRECTORY_URL: &str = "/build/wllama/";
     const LOCK_WAIT_MILLISECONDS: u32 = 500;
-
-    #[wasm_bindgen(inline_js = "export function sleep(milliseconds) { return new Promise((resolve) => setTimeout(resolve, milliseconds)); }")]
-    extern "C" {
-        fn sleep(milliseconds: u32) -> Promise;
-    }
 
     #[wasm_bindgen_test]
     async fn download_model_waits_while_model_lock_is_held_elsewhere() {
@@ -123,7 +123,7 @@ mod tests {
         let model_lock: ModelLock = ModelLock::acquire(&source.model_url).await.unwrap();
         let download = Box::pin(model_cache::download_model(&source, |_: DownloadProgress| {}));
 
-        let first_finished = future::select(download, JsFuture::from(sleep(LOCK_WAIT_MILLISECONDS))).await;
+        let first_finished = future::select(download, JsFuture::from(test_sleep::sleep(LOCK_WAIT_MILLISECONDS))).await;
         let Either::Right((_, waiting_download)) = first_finished
         else {
             panic!("the download finished while another holder had the model's lock");

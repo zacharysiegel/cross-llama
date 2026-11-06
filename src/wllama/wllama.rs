@@ -3,7 +3,7 @@ use std::num::NonZeroU32;
 
 use futures::channel::mpsc::UnboundedSender;
 use futures::lock::{Mutex, MutexGuard};
-use js_sys::Uint8Array;
+use js_sys::{Promise, Uint8Array};
 use serde::Deserialize;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
@@ -97,12 +97,12 @@ impl Model {
             on_progress(LoadProgress::from(progress));
         })
         .await?;
-        let vocabulary: GgufVocabulary = read_vocabulary(&model_files).await?;
+        let vocabulary: GgufVocabulary = read_vocabulary(&model_files, &model_lock).await?;
 
         on_progress(LoadProgress::Loading {
             loaded_proportion: 0.0,
         });
-        let loaded_context: LoadedContext = load_model(&wllama_instance, &model_files, context_token_count, load_options.sliding_window_cache).await?;
+        let loaded_context: LoadedContext = load_model(&wllama_instance, &model_files, &model_lock, context_token_count, load_options.sliding_window_cache).await?;
         model_lock.release();
         on_progress(LoadProgress::Loading {
             loaded_proportion: 1.0,
@@ -233,11 +233,13 @@ impl Drop for RunningGeneration<'_> {
     }
 }
 
-async fn read_vocabulary(model_files: &WllamaModelFiles) -> Result<GgufVocabulary, Error> {
+async fn read_vocabulary(model_files: &WllamaModelFiles, model_lock: &ModelLock) -> Result<GgufVocabulary, Error> {
     let mut prefix_byte_count: u32 = INITIAL_VOCABULARY_PREFIX_BYTE_COUNT;
 
     loop {
-        let prefix_array: JsValue = wllama_bridge::settle(wllama_bridge::read_model_prefix(model_files, prefix_byte_count)).await?;
+        let prefix_read: Promise = wllama_bridge::read_model_prefix(model_files, prefix_byte_count);
+        model_lock.hold_until_settled(&prefix_read);
+        let prefix_array: JsValue = wllama_bridge::settle(prefix_read).await?;
         let prefix: Vec<u8> = Uint8Array::new(&prefix_array).to_vec();
         let vocabulary_read: VocabularyRead = gguf_vocabulary::read_vocabulary(&prefix)?;
         let whole_file_read: bool = prefix.len() < usize::try_from(prefix_byte_count)?;
@@ -257,6 +259,7 @@ async fn read_vocabulary(model_files: &WllamaModelFiles) -> Result<GgufVocabular
 async fn load_model(
     wllama_instance: &WllamaInstance,
     model_files: &WllamaModelFiles,
+    model_lock: &ModelLock,
     context_token_count: NonZeroU32,
     sliding_window_cache: SlidingWindowCache,
 ) -> Result<LoadedContext, Error> {
@@ -267,8 +270,9 @@ async fn load_model(
         "swa_full": sliding_window_cache == SlidingWindowCache::Full,
         "n_batch": PROMPT_BATCH_TOKEN_COUNT,
     });
-    let loaded_context_json: JsValue =
-        wllama_bridge::settle(wllama_bridge::load_model(wllama_instance.wllama(), model_files, &load_parameters.to_string())).await?;
+    let loading: Promise = wllama_bridge::load_model(wllama_instance.wllama(), model_files, &load_parameters.to_string());
+    model_lock.hold_until_settled(&loading);
+    let loaded_context_json: JsValue = wllama_bridge::settle(loading).await?;
     let loaded_context_text: String = loaded_context_json
         .as_string()
         .ok_or_else(|| Error::new("wllama did not describe the loaded context"))?;
