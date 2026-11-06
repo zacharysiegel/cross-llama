@@ -4,6 +4,8 @@
 #   - installs the Rust toolchain rust-toolchain.toml names, with its targets
 #   - fetches wllama's browser files into build/wllama/ when they are missing or from another version
 #   - fetches the integration tests' model into build/models/ when it is missing or fails its checksum
+#   - installs, into build/tools/, the browser tests' wasm-bindgen test runner at the wasm-bindgen version Cargo.lock
+#     pins and a ChromeDriver matching the installed Google Chrome
 
 set -euo pipefail
 
@@ -11,11 +13,14 @@ set -euo pipefail
 repo_dir="${0:A:h:h}"
 cd "${repo_dir}"
 
+source ./scripts/browser-tools.zsh
+
 readonly WLLAMA_DIRECTORY="build/wllama"
 readonly TEST_MODEL_DIRECTORY="build/models"
 readonly TEST_MODEL_FILE_NAME="gemma-3-270m-it-Q8_0.gguf"
 readonly TEST_MODEL_URL="https://huggingface.co/ggml-org/gemma-3-270m-it-GGUF/resolve/e7647be17ae1108f2f605ed061ca0608b171afff/${TEST_MODEL_FILE_NAME}"
 readonly TEST_MODEL_SHA256="0ef57d2c838458a1952664260dcba38e5bdda37494f3af732f06e4add24068e3"
+readonly CHROME_FOR_TESTING_DOWNLOADS_URL="https://googlechromelabs.github.io/chrome-for-testing/latest-patch-versions-per-build-with-downloads.json"
 
 function check_prerequisites {
     function required_program {
@@ -40,6 +45,8 @@ function check_prerequisites {
     required_program "openssl" "brew install openssl"
     required_program "tar"     "brew install gnu-tar"
     required_program "jq"      "brew install jq"
+    # the browser tests' ChromeDriver download
+    required_program "unzip"   "brew install unzip"
 }
 check_prerequisites
 
@@ -102,5 +109,71 @@ function fetch_test_model_unless_verified {
     mv "${partial_path}" "${model_path}"
 }
 fetch_test_model_unless_verified
+
+function install_wasm_bindgen_test_runner_unless_present {
+    local wanted_version
+    wanted_version=$(print_wasm_bindgen_version)
+    local install_root
+    install_root=$(print_wasm_bindgen_install_root)
+
+    if test -x "${install_root}/bin/wasm-bindgen-test-runner"; then
+        return 0
+    fi
+
+    echo "Installing wasm-bindgen-cli ${wanted_version} into ${install_root}"
+    cargo install --locked --quiet --root "${install_root}" --version "${wanted_version}" wasm-bindgen-cli
+}
+install_wasm_bindgen_test_runner_unless_present
+
+function install_chromedriver_unless_present {
+    local chrome_build
+    chrome_build=$(print_chrome_build)
+
+    if test -z "${chrome_build}"; then
+        echo "Google Chrome is required by the browser tests"
+        echo "  install: brew install --cask google-chrome"
+        exit 1
+    fi
+
+    local install_directory
+    install_directory=$(print_chromedriver_directory)
+
+    if test -x "${install_directory}/chromedriver"; then
+        return 0
+    fi
+
+    local platform
+    platform=$(chrome_for_testing_platform)
+    local download_url
+    download_url=$(curl --silent --show-error --fail --location --max-time 120 "${CHROME_FOR_TESTING_DOWNLOADS_URL}" | jq --raw-output --arg build "${chrome_build}" --arg platform "${platform}" '.builds[$build].downloads.chromedriver[]? | select(.platform == $platform) | .url')
+
+    if test -z "${download_url}"; then
+        echo "Chrome for Testing has no ChromeDriver for Chrome ${chrome_build} on ${platform}"
+        exit 1
+    fi
+
+    echo "Installing ChromeDriver for Chrome ${chrome_build} into ${install_directory}"
+    local working_directory
+    working_directory=$(mktemp -d)
+    curl --silent --show-error --fail --location --max-time 300 --output "${working_directory}/chromedriver.zip" "${download_url}"
+    unzip -q "${working_directory}/chromedriver.zip" -d "${working_directory}"
+    mkdir -p "${install_directory}"
+    mv "${working_directory}/chromedriver-${platform}/chromedriver" "${install_directory}/chromedriver"
+    rm -rf "${working_directory}"
+}
+
+function chrome_for_testing_platform {
+    local operating_system
+    operating_system=$(uname -s)
+    local architecture
+    architecture=$(uname -m)
+
+    case "${operating_system}-${architecture}" in
+        Darwin-arm64) echo "mac-arm64" ;;
+        Darwin-x86_64) echo "mac-x64" ;;
+        *) echo "linux64" ;;
+    esac
+}
+install_chromedriver_unless_present
 
 echo "Setup complete."
