@@ -37,12 +37,12 @@ export async function loadModel(wllama, model, loadParametersJson) {
   const loading = wllama.loadModel(model, JSON.parse(loadParametersJson));
   pendingLoads.set(wllama, loading);
   await loading;
-  const { n_ctx, list_tokens_eog } = wllama.getLoadedContextInfo();
-  return JSON.stringify({ n_ctx, list_tokens_eog });
+  const { n_ctx, list_tokens_eog, token_bos, token_eos, add_bos_token, add_eos_token } = wllama.getLoadedContextInfo();
+  return JSON.stringify({ n_ctx, list_tokens_eog, token_bos, token_eos, add_bos_token, add_eos_token, chat_template: wllama.getChatTemplate() });
 }
 
 export async function generate(wllama, requestJson, abortSignal, onChunk) {
-  await wllama.createChatCompletion({
+  await wllama.createCompletion({
     ...JSON.parse(requestJson),
     stream: true,
     return_progress: true,

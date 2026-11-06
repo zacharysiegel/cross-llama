@@ -15,6 +15,8 @@ vulkan = ["llama-cpp-2/vulkan"]
 
 [dependencies]
 futures = { version = "0.3.*", default-features = false, features = ["std"] }
+minijinja = { version = "3.0.*", features = ["json", "loop_controls", "preserve_order", "serde"] }
+minijinja-contrib = { version = "3.0.*", features = ["pycompat"] }
 minimer = "2.2.*"
 serde_json = "1.0.*"
 
@@ -22,8 +24,6 @@ serde_json = "1.0.*"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 llama-cpp-2 = { version = "0.1.*", features = ["llguidance"] }
 llguidance = "1.9.*"
-minijinja = { version = "3.0.*", features = ["json", "loop_controls", "preserve_order", "serde"] }
-minijinja-contrib = { version = "3.0.*", features = ["pycompat"] }
 toktrie = "1.9.*"
 
 # Metal exists only on Apple's operating systems.

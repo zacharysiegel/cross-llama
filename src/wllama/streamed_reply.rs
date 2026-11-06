@@ -8,7 +8,7 @@ use crate::{Error, Generation, GenerationProgress, GenerationRequest};
 
 const MILLISECONDS_PER_SECOND: f64 = 1000.0;
 
-/// One streamed chunk of a llama.cpp server chat completion, as wllama passes it on.
+/// One streamed chunk of a llama.cpp server completion, as wllama passes it on.
 #[derive(Deserialize)]
 struct CompletionChunk {
     #[serde(default)]
@@ -19,13 +19,8 @@ struct CompletionChunk {
 
 #[derive(Deserialize)]
 struct ChunkChoice {
-    delta: ChunkDelta,
+    text: Option<String>,
     finish_reason: Option<FinishReason>,
-}
-
-#[derive(Deserialize)]
-struct ChunkDelta {
-    content: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -100,13 +95,13 @@ impl StreamedReply {
                 self.finish_reason = choice.finish_reason;
             }
 
-            let content: String = choice.delta.content.unwrap_or_default();
+            let text: String = choice.text.unwrap_or_default();
 
-            if content.is_empty() {
+            if text.is_empty() {
                 continue;
             }
 
-            self.text.push_str(&content);
+            self.text.push_str(&text);
             progress_reports.push(GenerationProgress::Generating {
                 generated_token_count: self.latest_timings.map_or(0, |timings| timings.generated_token_count),
                 maximum_token_count,
