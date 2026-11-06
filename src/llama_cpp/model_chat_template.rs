@@ -1,5 +1,5 @@
-use llama_cpp_2::ChatTemplateError;
-use llama_cpp_2::model::{LlamaChatTemplate, LlamaModel};
+use llama_cpp_2::MetaValError;
+use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::token::LlamaToken;
 use llama_cpp_2::vocab::LlamaVocab;
 
@@ -8,16 +8,13 @@ use crate::chat_template::{ChatTemplate, SequenceTokens};
 
 // llama.cpp's value for a token the vocabulary does not have.
 const NULL_TOKEN: LlamaToken = LlamaToken(-1);
+// llama.cpp's `llama_model_chat_template` answers some files without this key with a built-in template's name instead.
+const CHAT_TEMPLATE_METADATA_KEY: &str = "tokenizer.chat_template";
 
-minimer::impl_from_error!(Error, ChatTemplateError);
+minimer::impl_from_error!(Error, MetaValError);
 
 pub fn read_chat_template(model: &LlamaModel) -> Result<ChatTemplate, Error> {
-    let model_template: Result<LlamaChatTemplate, ChatTemplateError> = model.chat_template(None);
-    let model_template_source: Option<String> = match model_template {
-        Ok(model_template) => Some(model_template.to_string()?),
-        Err(ChatTemplateError::MissingTemplate) => None,
-        Err(template_error) => return Err(Error::from(template_error)),
-    };
+    let model_template_source: Option<String> = read_chat_template_source(model)?;
 
     let vocabulary: LlamaVocab = model.vocab();
     let sequence_tokens: SequenceTokens = SequenceTokens {
@@ -28,6 +25,18 @@ pub fn read_chat_template(model: &LlamaModel) -> Result<ChatTemplate, Error> {
     };
 
     ChatTemplate::new(model_template_source, sequence_tokens)
+}
+
+/// Absent when the model file has no template.
+fn read_chat_template_source(model: &LlamaModel) -> Result<Option<String>, Error> {
+    let metadata_value: Result<String, MetaValError> = model.meta_val_str(CHAT_TEMPLATE_METADATA_KEY);
+
+    match metadata_value {
+        Ok(template_source) => Ok(Some(template_source)),
+        // llama.cpp's answer for a missing key.
+        Err(MetaValError::NegativeReturn(_)) => Ok(None),
+        Err(metadata_error) => Err(Error::from(metadata_error)),
+    }
 }
 
 fn get_token_text(vocabulary: &LlamaVocab, token: LlamaToken) -> String {
