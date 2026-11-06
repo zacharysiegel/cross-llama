@@ -332,10 +332,11 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     use crate::wllama::wllama;
+    use crate::wllama::wllama::{Model, ModelSource};
     use crate::wllama::wllama_bridge;
     use crate::wllama::wllama_bridge::{Wllama, WllamaModelFiles};
     use crate::wllama::wllama_instance::WllamaInstance;
-    use crate::{Error, LoadProgress};
+    use crate::{Error, LoadOptions, LoadProgress, SlidingWindowCache};
 
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
@@ -348,6 +349,29 @@ mod tests {
     extern "C" {
         #[wasm_bindgen(method, js_name = isModelLoaded)]
         fn is_model_loaded(this: &Wllama) -> bool;
+    }
+
+    fn create_load_options() -> LoadOptions {
+        LoadOptions {
+            context_token_count: CONTEXT_TOKEN_COUNT,
+            sliding_window_cache: SlidingWindowCache::Full,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    async fn unload_frees_the_model_in_wllama() {
+        let source: ModelSource = ModelSource {
+            model_url: TEST_MODEL_URL.to_string(),
+            wllama_directory_url: WLLAMA_DIRECTORY_URL.to_string(),
+        };
+        let model: Model = Model::load(source, &create_load_options(), |_: LoadProgress| {}).await.unwrap();
+        let wllama_value: &JsValue = model.wllama_instance.wllama();
+        let wllama: Wllama = wllama_value.clone().unchecked_into::<Wllama>();
+
+        let unloaded: Result<(), Error> = model.unload().await;
+
+        assert!(unloaded.is_ok());
+        assert!(!wllama.is_model_loaded());
     }
 
     #[wasm_bindgen_test]
