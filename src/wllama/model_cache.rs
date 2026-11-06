@@ -47,7 +47,7 @@ pub async fn is_model_downloaded(source: &ModelSource) -> Result<bool, Error> {
 }
 
 /// Finds the model's files in the cache, or downloads them there.
-pub async fn download_model_files(
+pub(crate) async fn download_model_files(
     model_manager: &ModelManager,
     model_lock: &ModelLock,
     on_progress: &mut impl FnMut(DownloadProgress),
