@@ -270,6 +270,9 @@ async fn load_model(
         "n_parallel": PARALLEL_SEQUENCE_COUNT,
         "swa_full": sliding_window_cache == SlidingWindowCache::Full,
         "n_batch": PROMPT_BATCH_TOKEN_COUNT,
+        "jinja": false,
+        // Leaves a reasoning model's thinking in the reply text.
+        "reasoning_format": "none",
     });
     let loaded_context_json: JsValue =
         wllama_bridge::settle(wllama_bridge::load_model(wllama_instance.wllama(), model_files, &load_parameters.to_string())).await?;
