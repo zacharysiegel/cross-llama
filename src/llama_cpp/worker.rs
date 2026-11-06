@@ -237,6 +237,8 @@ impl<'model> GenerationSession<'model> {
         let reply: Reply = self.generate_reply(&mut sampler, request.maximum_token_count, monitor)?;
         let generating_duration: Duration = generating_started_at.elapsed();
 
+        check_reply_completes_json_value(request, &reply)?;
+
         Ok(Generation {
             text: reply.text,
             prompt_token_count: prompt_tokens.len(),
@@ -310,11 +312,16 @@ impl<'model> GenerationSession<'model> {
         let mut reply_text: ReplyText = ReplyText::new();
         let mut generated_token_count: usize = 0;
 
-        while generated_token_count < maximum_token_count {
+        // Samples once past the maximum to learn whether the reply ended exactly there.
+        let ending: ReplyEnding = loop {
             let token: LlamaToken = sampler.sample(&self.context, LAST_OUTPUT_INDEX);
 
             if vocabulary.is_eog(token) {
-                break;
+                break ReplyEnding::EndOfGeneration;
+            }
+
+            if generated_token_count == maximum_token_count {
+                break ReplyEnding::MaximumTokenCount;
             }
 
             reply_text.push_piece(&vocabulary.token_to_piece(token, false, None));
@@ -327,11 +334,12 @@ impl<'model> GenerationSession<'model> {
                 text: reply_text.text_so_far(),
             };
             monitor.report(progress)?;
-        }
+        };
 
         Ok(Reply {
             text: reply_text.into_text(),
             generated_token_count,
+            ending,
         })
     }
 }
@@ -339,6 +347,26 @@ impl<'model> GenerationSession<'model> {
 struct Reply {
     text: String,
     generated_token_count: usize,
+    ending: ReplyEnding,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReplyEnding {
+    EndOfGeneration,
+    MaximumTokenCount,
+}
+
+fn check_reply_completes_json_value(request: &GenerationRequest, reply: &Reply) -> Result<(), Error> {
+    let constrained_by_json_schema: bool = request.json_schema.is_some();
+
+    if constrained_by_json_schema && reply.ending == ReplyEnding::MaximumTokenCount {
+        return Err(Error::new(&format!(
+            "the reply reached the maximum of {} tokens before completing the JSON value its schema requires",
+            request.maximum_token_count,
+        )));
+    }
+
+    Ok(())
 }
 
 struct GenerationMonitor<'job> {
