@@ -50,7 +50,7 @@ let capability: BrowserCapability = probe_browser_capability().await?;
   - `probe_browser_capability` returns a `BrowserCapability`:
     - the WebGPU adapter's `maxBufferSize`, absent with no adapter or only a fallback adapter
     - cross-origin isolation
-    - which wllama build the browser gets (`WllamaBuildKind`), by wllama 3.8.1's rule: the compatibility build without JSPI or WebAssembly 64-bit memory
+    - which wllama build the browser gets (`WllamaBuildKind`), by wllama's rule under "Builds"
     - storage quota, usage and whether it is persisted
     - `navigator.deviceMemory`, where the browser reports it
 
@@ -104,7 +104,7 @@ Each backend is a module selected by `#[cfg]`, re-exported as the same public ty
 - Cancellation: each generation has an `AbortController`, which `cancel` and dropping the `generate` future abort; generations queued before a `cancel` see the cancellation when their turn comes.
 - `Model` holds JavaScript handles, so on `wasm32` it is neither `Send` nor `Sync`.
 - Builds:
-  - wllama uses its default build when the browser has WebAssembly 64-bit memory and JSPI, and switches to its compatibility build by itself otherwise.
+  - wllama 3.8.1 uses its default build when the browser has WebAssembly 64-bit memory and JSPI, and switches to its compatibility build by itself otherwise, except on Firefox, which `setCompat`'s default mode keeps on the default build, without WebGPU when it lacks JSPI.
   - The app serves both builds' files itself; the bridge tells wllama where the compatibility build is (`setCompat`) instead of letting it fetch from a CDN.
   - `scripts/check-browser-features.sh` reports which browsers' current releases get which build.
 - Measured on an M4 Max with gemma3 12B Q4_K_M:
