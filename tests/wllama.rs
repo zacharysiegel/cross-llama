@@ -3,6 +3,8 @@
 
 mod helpers;
 
+use std::collections::BTreeSet;
+
 use cross_llama::{
     Error,
     Generation,
@@ -153,6 +155,20 @@ async fn generate_with_json_schema_succeeds_when_reply_completes_at_maximum() {
     let generation: Generation = generate_ignoring_progress(&model, &request).await;
 
     assert_eq!(generation.text, unlimited_generation.text);
+}
+
+#[wasm_bindgen_test]
+async fn generate_at_high_temperature_samples_from_whole_vocabulary() {
+    let model: Model = load_test_model().await;
+    let requests: Vec<GenerationRequest> = fixtures::create_high_temperature_greeting_requests();
+    let mut distinct_reply_texts: BTreeSet<String> = BTreeSet::new();
+
+    for request in &requests {
+        let generation: Generation = generate_ignoring_progress(&model, request).await;
+        distinct_reply_texts.insert(generation.text);
+    }
+
+    assert!(distinct_reply_texts.len() > requests.len() / 2);
 }
 
 #[wasm_bindgen_test]
