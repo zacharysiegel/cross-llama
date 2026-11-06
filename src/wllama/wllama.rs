@@ -12,9 +12,12 @@ use web_sys::AbortController;
 use crate::chat_template::{ChatTemplate, SequenceTokens};
 use crate::gguf_vocabulary::{GgufVocabulary, VocabularyRead};
 use crate::wllama::abortable_operation::{AbortableOperation, OperationEvent};
+use crate::wllama::model_cache;
+use crate::wllama::model_cache::DownloadProgress;
+use crate::wllama::model_lock::ModelLock;
 use crate::wllama::streamed_reply::StreamedReply;
 use crate::wllama::wllama_bridge;
-use crate::wllama::wllama_bridge::{Wllama, WllamaModelFiles};
+use crate::wllama::wllama_bridge::{ModelManager, Wllama, WllamaModelFiles};
 use crate::wllama::wllama_instance::WllamaInstance;
 use crate::{
     ChatMessage,
@@ -88,13 +91,19 @@ impl Model {
         // Exits on failure, or when this future is dropped.
         let wllama_instance: WllamaInstance = WllamaInstance::new(wllama.unchecked_into::<Wllama>());
 
-        let model_files: WllamaModelFiles = download_model(&wllama_instance, &source.model_url, &mut on_progress).await?;
+        let model_lock: ModelLock = ModelLock::acquire(&source.model_url).await?;
+        let model_manager: ModelManager = wllama_instance.wllama().model_manager();
+        let model_files: WllamaModelFiles = model_cache::download_model_files(&model_manager, &model_lock, &mut |progress: DownloadProgress| {
+            on_progress(LoadProgress::from(progress));
+        })
+        .await?;
         let vocabulary: GgufVocabulary = read_vocabulary(&model_files).await?;
 
         on_progress(LoadProgress::Loading {
             loaded_proportion: 0.0,
         });
         let loaded_context: LoadedContext = load_model(&wllama_instance, &model_files, context_token_count, load_options.sliding_window_cache).await?;
+        model_lock.release();
         on_progress(LoadProgress::Loading {
             loaded_proportion: 1.0,
         });
@@ -224,36 +233,6 @@ impl Drop for RunningGeneration<'_> {
     }
 }
 
-async fn download_model(wllama_instance: &WllamaInstance, model_url: &str, on_progress: &mut impl FnMut(LoadProgress)) -> Result<WllamaModelFiles, Error> {
-    let mut download: AbortableOperation<LoadProgress, dyn FnMut(f64, f64)> = AbortableOperation::start(
-        |progress_sender: UnboundedSender<LoadProgress>| {
-            Closure::new(move |downloaded_byte_count: f64, total_byte_count: f64| {
-                let progress: LoadProgress = create_download_progress(downloaded_byte_count, total_byte_count);
-                // Fails only once the load has stopped waiting.
-                let _ = progress_sender.unbounded_send(progress);
-            })
-        },
-        |abort_signal, on_progress| wllama_bridge::download_model(wllama_instance.wllama(), model_url, abort_signal, on_progress),
-    )?;
-
-    loop {
-        let event: OperationEvent<LoadProgress> = download.next().await;
-
-        match event {
-            OperationEvent::Event(progress) => on_progress(progress),
-            OperationEvent::Settled(settlement) => return settlement.map(|model_files: JsValue| model_files.unchecked_into::<WllamaModelFiles>()),
-        }
-    }
-}
-
-fn create_download_progress(downloaded_byte_count: f64, total_byte_count: f64) -> LoadProgress {
-    // JavaScript numbers hold byte counts exactly up to 2^53, which no model file reaches.
-    LoadProgress::Downloading {
-        downloaded_byte_count: downloaded_byte_count as u64,
-        total_byte_count: (total_byte_count > 0.0).then_some(total_byte_count as u64),
-    }
-}
-
 async fn read_vocabulary(model_files: &WllamaModelFiles) -> Result<GgufVocabulary, Error> {
     let mut prefix_byte_count: u32 = INITIAL_VOCABULARY_PREFIX_BYTE_COUNT;
 
@@ -360,10 +339,12 @@ mod tests {
     use wasm_bindgen::prelude::*;
     use wasm_bindgen_test::wasm_bindgen_test;
 
-    use crate::wllama::wllama;
+    use crate::wllama::model_cache;
+    use crate::wllama::model_cache::DownloadProgress;
+    use crate::wllama::model_lock::ModelLock;
     use crate::wllama::wllama::{Model, ModelSource};
     use crate::wllama::wllama_bridge;
-    use crate::wllama::wllama_bridge::{Wllama, WllamaModelFiles};
+    use crate::wllama::wllama_bridge::{ModelManager, Wllama, WllamaModelFiles};
     use crate::wllama::wllama_instance::WllamaInstance;
     use crate::{Error, LoadOptions, LoadProgress, SlidingWindowCache};
 
@@ -407,7 +388,9 @@ mod tests {
     async fn exit_frees_the_model_whose_load_was_pending() {
         let created_wllama: JsValue = wllama_bridge::settle(wllama_bridge::create_wllama(WLLAMA_DIRECTORY_URL)).await.unwrap();
         let wllama_instance: WllamaInstance = WllamaInstance::new(created_wllama.unchecked_into::<Wllama>());
-        let model_files: WllamaModelFiles = wllama::download_model(&wllama_instance, TEST_MODEL_URL, &mut |_: LoadProgress| {}).await.unwrap();
+        let model_lock: ModelLock = ModelLock::acquire(TEST_MODEL_URL).await.unwrap();
+        let model_manager: ModelManager = wllama_instance.wllama().model_manager();
+        let model_files: WllamaModelFiles = model_cache::download_model_files(&model_manager, &model_lock, &mut |_: DownloadProgress| {}).await.unwrap();
         let load_parameters: serde_json::Value = serde_json::json!({ "n_ctx": CONTEXT_TOKEN_COUNT });
 
         let loading: Promise = wllama_bridge::load_model(wllama_instance.wllama(), &model_files, &load_parameters.to_string());

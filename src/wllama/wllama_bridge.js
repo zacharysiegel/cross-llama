@@ -2,11 +2,25 @@
 
 // wllama's exit frees nothing while loadModel has yet to create its worker, which loadModel then creates regardless.
 const pendingLoads = new WeakMap();
+const LOGGER = { ...console, debug: () => {} };
+const MODEL_LOCK_NAME_PREFIX = 'cross-llama model ';
+
+function resolveDirectoryUrl(wllamaDirectoryUrl) {
+  return new URL(wllamaDirectoryUrl.endsWith('/') ? wllamaDirectoryUrl : `${wllamaDirectoryUrl}/`, globalThis.location.href);
+}
+
+function resolveModelUrl(modelUrl) {
+  return new URL(modelUrl, globalThis.location.href).href;
+}
+
+async function importWllama(directoryUrl) {
+  return await import(new URL('index.js', directoryUrl).href);
+}
 
 export async function createWllama(wllamaDirectoryUrl) {
-  const directoryUrl = new URL(wllamaDirectoryUrl.endsWith('/') ? wllamaDirectoryUrl : `${wllamaDirectoryUrl}/`, globalThis.location.href);
-  const { Wllama } = await import(new URL('index.js', directoryUrl).href);
-  const wllama = new Wllama({ default: new URL('wllama.wasm', directoryUrl).href }, { suppressNativeLog: true, logger: { ...console, debug: () => {} } });
+  const directoryUrl = resolveDirectoryUrl(wllamaDirectoryUrl);
+  const { Wllama } = await importWllama(directoryUrl);
+  const wllama = new Wllama({ default: new URL('wllama.wasm', directoryUrl).href }, { suppressNativeLog: true, logger: LOGGER });
   wllama.setCompat({
     wasm: new URL('compat/wllama.wasm', directoryUrl).href,
     worker: new URL('compat/wllama.js', directoryUrl).href,
@@ -14,9 +28,14 @@ export async function createWllama(wllamaDirectoryUrl) {
   return wllama;
 }
 
-export async function downloadModel(wllama, modelUrl, abortSignal, onProgress) {
-  const source = { url: new URL(modelUrl, globalThis.location.href).href };
-  return await wllama.modelManager.getModelOrDownload(source, {
+// Manages the same cache in the browser's storage as every wllama instance's own model manager.
+export async function createModelManager(wllamaDirectoryUrl) {
+  const { ModelManager } = await importWllama(resolveDirectoryUrl(wllamaDirectoryUrl));
+  return new ModelManager({ logger: LOGGER });
+}
+
+export async function downloadModel(modelManager, modelUrl, abortSignal, onProgress) {
+  return await modelManager.getModelOrDownload({ url: resolveModelUrl(modelUrl) }, {
     signal: abortSignal,
     // Rust aborts before it frees the callback.
     progressCallback: ({ loaded, total }) => {
@@ -24,6 +43,29 @@ export async function downloadModel(wllama, modelUrl, abortSignal, onProgress) {
         onProgress(loaded, total);
       }
     },
+  });
+}
+
+// Lists the cache without a network request.
+export async function isModelDownloaded(modelManager, modelUrl) {
+  const resolvedModelUrl = resolveModelUrl(modelUrl);
+  const cachedModels = await modelManager.getModels();
+  return cachedModels.some((cachedModel) => cachedModel.url === resolvedModelUrl);
+}
+
+// Resolves once this page holds the model's lock, across every page of the origin; aborting the signal releases it.
+export function acquireModelLock(modelUrl, abortSignal) {
+  return new Promise((resolve, reject) => {
+    const holdUntilAborted = () => new Promise((release) => {
+      if (abortSignal.aborted) {
+        release();
+        return;
+      }
+
+      abortSignal.addEventListener('abort', () => release(), { once: true });
+      resolve();
+    });
+    navigator.locks.request(`${MODEL_LOCK_NAME_PREFIX}${resolveModelUrl(modelUrl)}`, { signal: abortSignal }, holdUntilAborted).catch(reject);
   });
 }
 
