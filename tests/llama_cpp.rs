@@ -148,6 +148,19 @@ fn load_reports_increasing_progress_up_to_whole() {
 }
 
 #[test]
+fn unload_frees_the_model_so_it_can_be_loaded_again() {
+    let model: Model = load_test_model(SlidingWindowCache::Full);
+
+    let unloaded: Result<(), Error> = executor::block_on(model.unload());
+    let reloaded_model: Model = load_test_model(SlidingWindowCache::Full);
+    let request: GenerationRequest = create_request(vec![create_message(Role::User, "Say hello to me.")], None, 8);
+    let generation: Generation = generate_ignoring_progress(&reloaded_model, &request);
+
+    assert!(unloaded.is_ok());
+    assert!(!generation.text.trim().is_empty());
+}
+
+#[test]
 fn generate_returns_plain_reply_within_maximum() {
     let model: Model = load_test_model(SlidingWindowCache::Full);
     let maximum_token_count: usize = 16;

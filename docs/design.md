@@ -8,6 +8,7 @@ Runs a GGUF language model from Rust with one API on every target: through llama
 let model: Model = Model::load(source, &load_options, |progress: LoadProgress| { ... }).await?;
 let generation: Generation = model.generate(&request, |progress: GenerationProgress| { ... }).await?;
 model.cancel();
+model.unload().await?;
 ```
 
 - `ModelSource`: a file path on targets other than `wasm32`; a URL in the browser.
@@ -32,6 +33,7 @@ model.cancel();
   - A request whose prompt plus maximum reply does not fit in the context fails before reading the prompt.
 - `cancel` stops the generation in progress and any queued before the call; dropping a `generate` future also stops its generation.
 - One generation runs at a time per `Model`; a second call waits for the first.
+- `unload` frees the model and resolves once its memory is freed; dropping a `Model` frees it too, but blocks the dropping thread until the model's worker thread has finished its current batch and freed the model.
 - Errors use `minimer`'s static error type, which keeps the source error as text, so errors can cross the worker thread and be sent between async tasks.
 
 Tokens, batches, samplers and the cache stay inside the crate. A caller that later needs one of them gets it added deliberately.
