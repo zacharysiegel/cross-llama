@@ -10,6 +10,9 @@ mod gguf_vocabulary;
 #[cfg(not(target_arch = "wasm32"))]
 mod llama_cpp;
 mod load;
+// wllama is JavaScript and needs a browser, which other targets lack.
+#[cfg(target_arch = "wasm32")]
+mod wllama;
 
 pub use error::*;
 pub use generation::*;
@@ -17,3 +20,6 @@ pub use generation::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use llama_cpp::*;
 pub use load::*;
+// wllama is JavaScript and needs a browser, which other targets lack.
+#[cfg(target_arch = "wasm32")]
+pub use wllama::*;
