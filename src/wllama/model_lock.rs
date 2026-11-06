@@ -15,7 +15,6 @@ impl ModelLock {
     /// Waits for every other holder to release it.
     pub async fn acquire(model_url: &str) -> Result<Self, Error> {
         let abort_controller: AbortController = AbortController::new().map_err(|javascript_error| wllama_bridge::create_error(&javascript_error))?;
-        // Dropped while waiting, this abandons the request.
         let model_lock: ModelLock = ModelLock {
             model_url: model_url.to_string(),
             abort_controller,
