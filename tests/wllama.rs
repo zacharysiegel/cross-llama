@@ -151,10 +151,14 @@ async fn generate_with_json_schema_succeeds_when_reply_completes_at_maximum() {
     let model: Model = load_test_model().await;
     let unlimited_generation: Generation = generate_ignoring_progress(&model, &fixtures::create_capital_question_request(100)).await;
     let request: GenerationRequest = fixtures::create_capital_question_request(unlimited_generation.generated_token_count);
+    // Fails only if the counted tokens are exactly the reply's, so the first request does end at its maximum.
+    let one_token_short_request: GenerationRequest = fixtures::create_capital_question_request(unlimited_generation.generated_token_count - 1);
 
     let generation: Generation = generate_ignoring_progress(&model, &request).await;
+    let one_token_short_outcome: Result<Generation, GenerationError> = model.generate(&one_token_short_request, |_: GenerationProgress| {}).await;
 
     assert_eq!(generation.text, unlimited_generation.text);
+    assert!(matches!(one_token_short_outcome, Err(GenerationError::Failed(_))));
 }
 
 #[wasm_bindgen_test]
