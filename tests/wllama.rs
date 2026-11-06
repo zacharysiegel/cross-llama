@@ -211,7 +211,8 @@ async fn generate_reports_prompt_progress_then_token_progress_in_order() {
         GenerationProgress::ReadingPrompt { .. } => panic!(),
     });
 
-    assert!(read_token_counts.len() > 1);
+    // The first report carries the reused count, so more than two show the prompt read in more than one batch.
+    assert!(read_token_counts.len() > 2);
     assert!(read_token_counts.windows(2).all(|pair| pair[0] < pair[1]));
     assert_eq!(read_token_counts.last().copied(), Some(generation.prompt_token_count));
     assert!(generated_token_counts.windows(2).all(|pair| pair[0] < pair[1]));
