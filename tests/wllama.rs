@@ -6,6 +6,7 @@ mod helpers;
 use std::collections::BTreeSet;
 
 use cross_llama::{
+    BrowserCapability,
     DownloadProgress,
     Error,
     Generation,
@@ -409,4 +410,13 @@ async fn is_model_downloaded_makes_no_network_request() {
 
     assert!(!downloaded);
     assert_eq!(count_resource_requests(&source.model_url), 0);
+}
+
+#[wasm_bindgen_test]
+async fn probe_browser_capability_reports_cross_origin_isolation_and_storage() {
+    let capability: BrowserCapability = cross_llama::probe_browser_capability().await.unwrap();
+
+    // The runner sends the cross-origin isolation headers.
+    assert!(capability.cross_origin_isolated);
+    assert!(capability.storage_quota_byte_count.is_some_and(|quota| quota > 0));
 }
