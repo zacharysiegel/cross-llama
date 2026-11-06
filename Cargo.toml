@@ -1,0 +1,26 @@
+[package]
+name = "cross-llama"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+cuda = ["llama-cpp-2/cuda"]
+vulkan = ["llama-cpp-2/vulkan"]
+
+[dependencies]
+futures = { version = "0.3.*", default-features = false, features = ["std"] }
+minimer = "2.2.*"
+serde_json = "1.0.*"
+
+# llama-cpp-sys-2 compiles llama.cpp with CMake and a native C++ compiler, which cannot target wasm32.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+llama-cpp-2 = { version = "0.1.*", features = ["llguidance"] }
+llguidance = "1.9.*"
+toktrie = "1.9.*"
+
+# Metal exists only on Apple's operating systems.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+llama-cpp-2 = { version = "0.1.*", features = ["metal"] }
+
+[dev-dependencies]
+futures = { version = "0.3.*", default-features = false, features = ["std", "executor"] }

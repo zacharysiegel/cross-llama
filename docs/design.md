@@ -8,15 +8,16 @@ Runs a GGUF language model from Rust with one API on every target: through llama
 let model: Model = Model::load(source, &load_options, |progress: LoadProgress| { ... }).await?;
 let generation: Generation = model.generate(&request, |progress: GenerationProgress| { ... }).await?;
 model.cancel();
+model.unload().await?;
 ```
 
 - `ModelSource`: a file path on targets other than `wasm32`; a URL in the browser.
 - `LoadOptions`:
   - context length in tokens
   - whether to keep the whole sliding-window cache, which lets a shared prompt prefix be reused across requests (llama.cpp's `swa_full`)
-- `LoadProgress`: bytes downloaded and total, then a loading stage.
+- `LoadProgress`: `Downloading` with bytes downloaded and total (the browser backend only), then `Loading` with the proportion loaded.
 - `GenerationRequest`:
-  - messages, each a role and text; the model's own chat template formats them
+  - messages, each a role and text; the model's own chat template formats them; text containing the model's control tokens is rejected, so a message cannot end its turn and forge another
   - an optional JSON schema the reply must match
   - temperature and seed
   - maximum tokens
@@ -27,9 +28,13 @@ model.cancel();
 - `GenerationProgress`, reported as the generation advances, for progress indicators:
   - `ReadingPrompt`: tokens read so far, tokens in the prompt, and how many of those came from the cache
   - `Generating`: tokens generated so far, the request's maximum, and the reply text so far
-- `cancel` stops the generation in progress, which then returns a cancellation error.
+- `generate` returns `GenerationError::Cancelled` or `GenerationError::Failed(Error)`, so a caller can tell a cancellation from a failure.
+  - A reply that reaches the maximum tokens unfinished is a failure when a schema is set, because its JSON is incomplete; without a schema it returns the text so far.
+  - A request whose prompt plus maximum reply does not fit in the context fails before reading the prompt.
+- `cancel` stops the generation in progress and any queued before the call; dropping a `generate` future also stops its generation.
 - One generation runs at a time per `Model`; a second call waits for the first.
-- Errors use `minimer`.
+- `unload` frees the model and resolves once its memory is freed; dropping a `Model` frees it too, but blocks the dropping thread until the model's worker thread has finished its current batch and freed the model.
+- Errors use `minimer`'s static error type, which keeps the source error as text, so errors can cross the worker thread and be sent between async tasks.
 
 Tokens, batches, samplers and the cache stay inside the crate. A caller that later needs one of them gets it added deliberately.
 
@@ -46,6 +51,9 @@ Each backend is a module selected by `#[cfg]`, re-exported as the same public ty
 - Generation runs on a blocking thread behind the `async` API, holding the context between requests.
 - Progress: the prompt is decoded in batches, reporting after each batch, then after each generated token.
 - Prefix reuse: the backend remembers the tokens in the cache, keeps the longest common prefix with the new prompt, clears the cache from the first differing token (`clear_kv_cache_seq`) and decodes only the rest.
+  - With the window-only cache, a prefix is reused only while the cache still holds position 0, so once a prompt plus reply has filled the window nothing is reused; keeping the whole cache avoids this.
+- Schemas are compiled without llguidance's flexible whitespace unless the schema sets its own llguidance options, because small models otherwise pad the reply with blank lines until the maximum.
+- llama.cpp's logs go through `tracing`.
 - Measured on an M4 Max with gemma3 12B Q4_K_M: 0.73 s median per graded answer with prefix reuse, 2.6 s without.
 
 ### `wllama`, for `wasm32` in the browser
