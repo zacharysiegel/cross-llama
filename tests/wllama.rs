@@ -6,6 +6,8 @@ mod helpers;
 use std::collections::BTreeSet;
 
 use cross_llama::{
+    BrowserCapability,
+    DownloadProgress,
     Error,
     Generation,
     GenerationError,
@@ -21,16 +23,32 @@ use futures::channel::oneshot;
 use futures::future;
 use futures::future::Either;
 use helpers::fixtures;
+use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::wasm_bindgen_test;
 
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 // wasm-bindgen-test's runner serves the crate root alongside its own files.
 const WLLAMA_DIRECTORY_URL: &str = "/build/wllama/";
+// The runner sends small files with their length, which wllama's cache checks.
+const SMALL_MODEL_URL: &str = "/tests/data/empty.gguf";
+
+#[wasm_bindgen(inline_js = "export function count_resource_requests(url_part) { return performance.getEntriesByType('resource').filter((entry) => entry.name.includes(url_part)).length; }")]
+extern "C" {
+    fn count_resource_requests(url_part: &str) -> u32;
+}
 
 fn create_model_source() -> ModelSource {
     ModelSource {
         model_url: format!("/{}", fixtures::TEST_MODEL_RELATIVE_PATH),
+        wllama_directory_url: WLLAMA_DIRECTORY_URL.to_string(),
+    }
+}
+
+/// The query keeps each test's cached copy apart; the runner ignores it.
+fn create_small_model_source(cache_key: &str) -> ModelSource {
+    ModelSource {
+        model_url: format!("{SMALL_MODEL_URL}?cache_key={cache_key}-{}", js_sys::Date::now()),
         wllama_directory_url: WLLAMA_DIRECTORY_URL.to_string(),
     }
 }
@@ -370,4 +388,34 @@ async fn generate_after_cancel_completes() {
     let generation_outcome: Result<Generation, GenerationError> = model.generate(&fixtures::create_greeting_request(8), |_: GenerationProgress| {}).await;
 
     assert!(generation_outcome.is_ok());
+}
+
+#[wasm_bindgen_test]
+async fn is_model_downloaded_is_true_only_after_download_model() {
+    let source: ModelSource = create_small_model_source("download");
+
+    let downloaded_before: bool = cross_llama::is_model_downloaded(&source).await.unwrap();
+    cross_llama::download_model(&source, |_: DownloadProgress| {}).await.unwrap();
+    let downloaded_after: bool = cross_llama::is_model_downloaded(&source).await.unwrap();
+
+    assert!(!downloaded_before);
+    assert!(downloaded_after);
+}
+
+#[wasm_bindgen_test]
+async fn is_model_downloaded_makes_no_network_request() {
+    let source: ModelSource = create_small_model_source("no-request");
+
+    let _downloaded: bool = cross_llama::is_model_downloaded(&source).await.unwrap();
+
+    assert_eq!(count_resource_requests(&source.model_url), 0);
+}
+
+#[wasm_bindgen_test]
+async fn probe_browser_capability_reports_cross_origin_isolation_and_storage() {
+    let capability: BrowserCapability = cross_llama::probe_browser_capability().await.unwrap();
+
+    // The runner sends the cross-origin isolation headers.
+    assert!(capability.cross_origin_isolated);
+    assert!(capability.storage_quota_byte_count.is_some_and(|quota| quota > 0));
 }

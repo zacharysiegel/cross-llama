@@ -1,6 +1,6 @@
 # cross-llama
 
-Runs a GGUF language model from Rust behind one async API: through llama.cpp on targets other than `wasm32`, and through wllama (llama.cpp compiled to WebAssembly) in the browser. The design is in [docs/design.md](./docs/design.md).
+Runs a GGUF language model from Rust behind one async API: through llama.cpp on targets other than `wasm32`, and through wllama (llama.cpp compiled to WebAssembly) in the browser. Both format prompts with the model file's own Jinja chat template, with thinking off. The design is in [docs/design.md](./docs/design.md).
 
 ## Example
 
@@ -36,6 +36,12 @@ let source: ModelSource = ModelSource {
     wllama_directory_url: "/wllama/".to_string(),
 };
 ```
+
+In the browser only:
+
+- `download_model(&source, on_progress)` puts the model in wllama's cache without loading it.
+- `is_model_downloaded(&source)` checks that cache without a network request.
+- `probe_browser_capability()` reports WebGPU, cross-origin isolation, the wllama build the browser gets, storage and device memory.
 
 `Model::cancel` stops the generation in progress, which then returns `GenerationError::Cancelled`. The crate does not depend on an async runtime; any executor can drive the futures.
 
