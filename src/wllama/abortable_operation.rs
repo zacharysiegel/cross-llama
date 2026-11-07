@@ -12,7 +12,8 @@ use crate::wllama::wllama_bridge;
 
 pub enum OperationEvent<Event> {
     Event(Event),
-    Settled(Result<JsValue, Error>),
+    /// The rejection is the operation's JavaScript error.
+    Settled(Result<JsValue, JsValue>),
 }
 
 /// A running JavaScript operation, aborted when this is dropped, and the events its callback sends.
@@ -63,7 +64,7 @@ impl<Event, Callback: ?Sized> AbortableOperation<Event, Callback> {
             Either::Right((settlement, _)) => settlement,
         };
 
-        OperationEvent::Settled(settlement.map_err(|javascript_error: JsValue| wllama_bridge::create_error(&javascript_error)))
+        OperationEvent::Settled(settlement)
     }
 }
 

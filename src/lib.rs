@@ -1,5 +1,6 @@
 //! Runs a GGUF language model with one API on every target.
 
+mod chat_template;
 mod error;
 mod generation;
 mod generation_checks;
@@ -10,6 +11,8 @@ mod gguf_vocabulary;
 #[cfg(not(target_arch = "wasm32"))]
 mod llama_cpp;
 mod load;
+#[cfg(test)]
+mod test_model;
 // wllama is JavaScript and needs a browser, which other targets lack.
 #[cfg(target_arch = "wasm32")]
 mod wllama;

@@ -1,6 +1,6 @@
 [package]
 name = "cross-llama"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Runs a GGUF language model from Rust behind one async API: llama.cpp on targets other than wasm32, wllama in the browser"
 license = "MIT"
@@ -15,6 +15,8 @@ vulkan = ["llama-cpp-2/vulkan"]
 
 [dependencies]
 futures = { version = "0.3.*", default-features = false, features = ["std"] }
+minijinja = { version = "3.0.*", features = ["json", "loop_controls", "preserve_order", "serde"] }
+minijinja-contrib = { version = "3.0.*", features = ["pycompat"] }
 minimer = "2.2.*"
 serde_json = "1.0.*"
 
