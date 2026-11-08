@@ -27,11 +27,17 @@ extern "C" {
 
     /// Calls `on_progress` with the bytes downloaded and the total, which is zero when the server does not give it.
     #[wasm_bindgen(js_name = downloadModel)]
-    pub fn download_model(model_manager: &ModelManager, model_url: &str, abort_signal: &AbortSignal, on_progress: &Function) -> Promise;
+    pub fn download_model(
+        wllama_directory_url: &str,
+        model_manager: &ModelManager,
+        model_url: &str,
+        abort_signal: &AbortSignal,
+        on_progress: &Function,
+    ) -> Promise;
 
     /// Resolves to a boolean.
     #[wasm_bindgen(js_name = isModelDownloaded)]
-    pub fn is_model_downloaded(model_manager: &ModelManager, model_url: &str) -> Promise;
+    pub fn is_model_downloaded(wllama_directory_url: &str, model_manager: &ModelManager, model_url: &str) -> Promise;
 
     /// Resolves once the lock is held; aborting `abort_signal` releases it once every promise in `held_operations` has
     /// settled.
