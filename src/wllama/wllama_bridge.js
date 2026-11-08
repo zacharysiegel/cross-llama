@@ -51,12 +51,19 @@ export async function downloadModel(wllamaDirectoryUrl, modelManager, modelUrl, 
     return validModel;
   }
 
-  // Keeps each part whose cached size matches its metadata, and fetches the others again.
+  // Keeps each part whose cached size matches its metadata, or, without metadata, the server's size; fetches the others again.
   const completePartByteCount = countCompletePartBytes(cachedModel.partFiles);
-  return await modelManager.downloadModel({ url: resolvedModelUrl }, {
+  const model = await modelManager.downloadModel({ url: resolvedModelUrl }, {
     signal: abortSignal,
     progressCallback: ({ loaded, total }) => reportProgress(completePartByteCount + loaded, total),
   });
+
+  // No progress so far counts a part kept without metadata. An invalid model's size is not its byte count.
+  if (model.validate() === wllamaModule.ModelValidationStatus.VALID) {
+    reportProgress(model.size, model.size);
+  }
+
+  return model;
 }
 
 // Lists the cache without a network request.
@@ -87,7 +94,7 @@ function findValidModel(wllamaModule, modelManager, resolvedModelUrl, { cachedFi
   return model.validate() === wllamaModule.ModelValidationStatus.VALID ? model : null;
 }
 
-// wllama's download skips these parts, so its progress leaves them out.
+// wllama's download keeps these parts without reporting progress for them.
 function countCompletePartBytes(partFiles) {
   return partFiles
     .filter((partFile) => partFile !== undefined && partFile.size === partFile.metadata.originalSize)

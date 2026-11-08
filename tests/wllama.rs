@@ -34,8 +34,10 @@ wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 const WLLAMA_DIRECTORY_URL: &str = "/build/wllama/";
 // The runner sends small files with their length, which wllama's cache checks.
 const SMALL_MODEL_URL: &str = "/tests/data/empty.gguf";
-// Two parts of `empty.gguf`'s 24 bytes each.
-const SPLIT_MODEL_BYTE_COUNT: u64 = 48;
+// Each part is a copy of `empty.gguf`.
+const PART_BYTE_COUNT: u32 = 24;
+const SPLIT_MODEL_BYTE_COUNT: u64 = 2 * PART_BYTE_COUNT as u64;
+const PARTIAL_PART_BYTE_COUNT: u32 = 10;
 
 #[wasm_bindgen(inline_js = "export function count_resource_requests(url_part) { return performance.getEntriesByType('resource').filter((entry) => entry.name.includes(url_part)).length; }")]
 extern "C" {
@@ -43,11 +45,9 @@ extern "C" {
 }
 
 #[wasm_bindgen(inline_js = r#"
-const PARTIAL_PART_BYTE_COUNT = 10;
-
-/* Caches the first part as wllama's model download does, and the start of the second part without the metadata wllama
+/* Caches the first part as wllama's model download does, and the second part's first bytes without the metadata wllama
    writes once a part is complete. */
-export async function cache_split_model_stopped_in_second_part(wllamaDirectoryUrl, firstPartUrl, secondPartUrl) {
+export async function cache_split_model_without_second_part_metadata(wllamaDirectoryUrl, firstPartUrl, secondPartUrl, secondPartByteCount) {
   const { ModelManager } = await import(new URL('index.js', new URL(wllamaDirectoryUrl, location.href)).href);
   const cacheManager = new ModelManager().cacheManager;
   const firstPartAbsoluteUrl = new URL(firstPartUrl, location.href).href;
@@ -55,11 +55,11 @@ export async function cache_split_model_stopped_in_second_part(wllamaDirectoryUr
 
   await cacheManager.download(firstPartAbsoluteUrl, { metadataAdditional: { originalURL: firstPartAbsoluteUrl } });
   // wllama 3.8.1's storage backend, which has no public API for a file without metadata.
-  await cacheManager.sb.write(await cacheManager.getNameFromURL(secondPartAbsoluteUrl), new Blob([new Uint8Array(PARTIAL_PART_BYTE_COUNT)]).stream());
+  await cacheManager.sb.write(await cacheManager.getNameFromURL(secondPartAbsoluteUrl), new Blob([new Uint8Array(secondPartByteCount)]).stream());
 }
 "#)]
 extern "C" {
-    fn cache_split_model_stopped_in_second_part(wllama_directory_url: &str, first_part_url: &str, second_part_url: &str) -> Promise;
+    fn cache_split_model_without_second_part_metadata(wllama_directory_url: &str, first_part_url: &str, second_part_url: &str, second_part_byte_count: u32) -> Promise;
 }
 
 fn create_model_source() -> ModelSource {
@@ -83,11 +83,20 @@ fn create_split_model_part_url(part_number: u32, cache_key: &str) -> String {
 
 /// Leaves the cache as a download stopped while writing the second of the model's two parts does.
 async fn create_split_model_source_stopped_partway(cache_key: &str) -> ModelSource {
+    create_split_model_source_without_second_part_metadata(cache_key, PARTIAL_PART_BYTE_COUNT).await
+}
+
+/// Leaves the cache as a download stopped between writing the second part's bytes and its metadata does.
+async fn create_split_model_source_stopped_before_last_metadata(cache_key: &str) -> ModelSource {
+    create_split_model_source_without_second_part_metadata(cache_key, PART_BYTE_COUNT).await
+}
+
+async fn create_split_model_source_without_second_part_metadata(cache_key: &str, second_part_byte_count: u32) -> ModelSource {
     let unique_cache_key: String = format!("{cache_key}-{}", js_sys::Date::now());
     let first_part_url: String = create_split_model_part_url(1, &unique_cache_key);
     let second_part_url: String = create_split_model_part_url(2, &unique_cache_key);
 
-    JsFuture::from(cache_split_model_stopped_in_second_part(WLLAMA_DIRECTORY_URL, &first_part_url, &second_part_url))
+    JsFuture::from(cache_split_model_without_second_part_metadata(WLLAMA_DIRECTORY_URL, &first_part_url, &second_part_url, second_part_byte_count))
         .await
         .unwrap();
 
@@ -95,6 +104,16 @@ async fn create_split_model_source_stopped_partway(cache_key: &str) -> ModelSour
         model_url: first_part_url,
         wllama_directory_url: WLLAMA_DIRECTORY_URL.to_string(),
     }
+}
+
+async fn download_model_recording_last_progress(source: &ModelSource) -> Option<DownloadProgress> {
+    let mut last_progress: Option<DownloadProgress> = None;
+
+    cross_llama::download_model(source, |progress: DownloadProgress| last_progress = Some(progress))
+        .await
+        .unwrap();
+
+    last_progress
 }
 
 async fn load_test_model(sliding_window_cache: SlidingWindowCache) -> Model {
@@ -478,11 +497,19 @@ async fn download_model_completes_split_model_whose_download_stopped_partway() {
 #[wasm_bindgen_test]
 async fn download_model_counts_cached_parts_as_downloaded() {
     let source: ModelSource = create_split_model_source_stopped_partway("stopped-progress").await;
-    let mut last_progress: Option<DownloadProgress> = None;
+    let last_progress: Option<DownloadProgress> = download_model_recording_last_progress(&source).await;
 
-    cross_llama::download_model(&source, |progress: DownloadProgress| last_progress = Some(progress))
-        .await
-        .unwrap();
+    let expected_progress: DownloadProgress = DownloadProgress {
+        downloaded_byte_count: SPLIT_MODEL_BYTE_COUNT,
+        total_byte_count: Some(SPLIT_MODEL_BYTE_COUNT),
+    };
+    assert_eq!(last_progress, Some(expected_progress));
+}
+
+#[wasm_bindgen_test]
+async fn download_model_counts_cached_part_without_metadata_as_downloaded() {
+    let source: ModelSource = create_split_model_source_stopped_before_last_metadata("stopped-metadata").await;
+    let last_progress: Option<DownloadProgress> = download_model_recording_last_progress(&source).await;
 
     let expected_progress: DownloadProgress = DownloadProgress {
         downloaded_byte_count: SPLIT_MODEL_BYTE_COUNT,
