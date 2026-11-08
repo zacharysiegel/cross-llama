@@ -31,7 +31,7 @@ pub async fn download_model(source: &ModelSource, mut on_progress: impl FnMut(Do
     let model_manager: ModelManager = create_model_manager(&source.wllama_directory_url).await?;
     let model_lock: ModelLock = ModelLock::acquire(&source.model_url).await?;
 
-    let _model_files: WllamaModelFiles = download_model_files(&model_manager, &model_lock, &mut on_progress).await?;
+    let _model_files: WllamaModelFiles = download_model_files(&source.wllama_directory_url, &model_manager, &model_lock, &mut on_progress).await?;
     model_lock.release();
 
     Ok(())
@@ -40,15 +40,17 @@ pub async fn download_model(source: &ModelSource, mut on_progress: impl FnMut(Do
 /// Reads only the browser's storage.
 pub async fn is_model_downloaded(source: &ModelSource) -> Result<bool, Error> {
     let model_manager: ModelManager = create_model_manager(&source.wllama_directory_url).await?;
-    let downloaded: JsValue = wllama_bridge::settle_wllama_call(wllama_bridge::is_model_downloaded(&model_manager, &source.model_url)).await?;
+    let model_check: Promise = wllama_bridge::is_model_downloaded(&source.wllama_directory_url, &model_manager, &source.model_url);
+    let downloaded: JsValue = wllama_bridge::settle_wllama_call(model_check).await?;
 
     downloaded
         .as_bool()
         .ok_or_else(|| Error::new("wllama did not say whether the model is downloaded"))
 }
 
-/// Finds the model's files in the cache, or downloads them there.
+/// Finds the model's files in the cache, or downloads the parts missing there.
 pub(crate) async fn download_model_files(
+    wllama_directory_url: &str,
     model_manager: &ModelManager,
     model_lock: &ModelLock,
     on_progress: &mut impl FnMut(DownloadProgress),
@@ -62,7 +64,7 @@ pub(crate) async fn download_model_files(
             })
         },
         |abort_signal, on_progress| {
-            let download: Promise = wllama_bridge::download_model(model_manager, model_lock.model_url(), abort_signal, on_progress);
+            let download: Promise = wllama_bridge::download_model(wllama_directory_url, model_manager, model_lock.model_url(), abort_signal, on_progress);
             // An aborted download still writes its file until it settles.
             model_lock.hold_until_settled(&download);
             download

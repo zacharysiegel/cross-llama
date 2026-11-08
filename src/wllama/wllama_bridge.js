@@ -34,23 +34,71 @@ export async function createModelManager(wllamaDirectoryUrl) {
   return new ModelManager({ logger: LOGGER });
 }
 
-export async function downloadModel(modelManager, modelUrl, abortSignal, onProgress) {
-  return await modelManager.getModelOrDownload({ url: resolveModelUrl(modelUrl) }, {
+export async function downloadModel(wllamaDirectoryUrl, modelManager, modelUrl, abortSignal, onProgress) {
+  const wllamaModule = await importWllama(resolveDirectoryUrl(wllamaDirectoryUrl));
+  const resolvedModelUrl = resolveModelUrl(modelUrl);
+  const cachedModel = await readCachedModel(wllamaModule, modelManager, resolvedModelUrl);
+  const validModel = findValidModel(wllamaModule, modelManager, resolvedModelUrl, cachedModel);
+  // Rust aborts before it frees the callback.
+  const reportProgress = (loaded, total) => {
+    if (!abortSignal.aborted) {
+      onProgress(loaded, total);
+    }
+  };
+
+  if (validModel) {
+    reportProgress(validModel.size, validModel.size);
+    return validModel;
+  }
+
+  // Keeps each part whose cached size matches its metadata, or, without metadata, the server's size; fetches the others again.
+  const completePartByteCount = countCompletePartBytes(cachedModel.partFiles);
+  const model = await modelManager.downloadModel({ url: resolvedModelUrl }, {
     signal: abortSignal,
-    // Rust aborts before it frees the callback.
-    progressCallback: ({ loaded, total }) => {
-      if (!abortSignal.aborted) {
-        onProgress(loaded, total);
-      }
-    },
+    progressCallback: ({ loaded, total }) => reportProgress(completePartByteCount + loaded, total),
   });
+
+  // No progress so far counts a part kept without metadata. An invalid model's size is not its byte count.
+  if (model.validate() === wllamaModule.ModelValidationStatus.VALID) {
+    reportProgress(model.size, model.size);
+  }
+
+  return model;
 }
 
 // Lists the cache without a network request.
-export async function isModelDownloaded(modelManager, modelUrl) {
+export async function isModelDownloaded(wllamaDirectoryUrl, modelManager, modelUrl) {
+  const wllamaModule = await importWllama(resolveDirectoryUrl(wllamaDirectoryUrl));
   const resolvedModelUrl = resolveModelUrl(modelUrl);
-  const cachedModels = await modelManager.getModels();
-  return cachedModels.some((cachedModel) => cachedModel.url === resolvedModelUrl);
+  const cachedModel = await readCachedModel(wllamaModule, modelManager, resolvedModelUrl);
+  return findValidModel(wllamaModule, modelManager, resolvedModelUrl, cachedModel) !== null;
+}
+
+/* wllama 3.8.1's getModels, and so getModelOrDownload, throws while any split model in the cache lacks a part's metadata,
+   which a download stopped partway leaves, so the bridge reads the one model's parts itself. A part's file without
+   metadata is absent from partFiles. */
+async function readCachedModel(wllamaModule, modelManager, resolvedModelUrl) {
+  const cachedFiles = await modelManager.cacheManager.list();
+  const partFiles = wllamaModule.ModelManager.parseModelUrl(resolvedModelUrl)
+    .map((partUrl) => cachedFiles.find((cachedFile) => cachedFile.metadata.originalURL === partUrl));
+  return { cachedFiles, partFiles };
+}
+
+function findValidModel(wllamaModule, modelManager, resolvedModelUrl, { cachedFiles, partFiles }) {
+  // Model's constructor throws unless every part has its metadata.
+  if (partFiles.includes(undefined)) {
+    return null;
+  }
+
+  const model = new wllamaModule.Model(modelManager, resolvedModelUrl, undefined, cachedFiles);
+  return model.validate() === wllamaModule.ModelValidationStatus.VALID ? model : null;
+}
+
+// wllama's download keeps these parts without reporting progress for them.
+function countCompletePartBytes(partFiles) {
+  return partFiles
+    .filter((partFile) => partFile !== undefined && partFile.size === partFile.metadata.originalSize)
+    .reduce((byteCount, partFile) => byteCount + partFile.size, 0);
 }
 
 // Resolves once this page holds the model's lock, across every page of the origin. Aborting the signal releases it once
