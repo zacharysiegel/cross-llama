@@ -484,13 +484,12 @@ async fn is_model_downloaded_is_false_for_split_model_whose_download_stopped_par
 }
 
 #[wasm_bindgen_test]
-async fn download_model_completes_split_model_whose_download_stopped_partway() {
+async fn download_model_leaves_split_model_whose_download_stopped_partway_downloaded() {
     let source: ModelSource = create_split_model_source_stopped_partway("stopped-download").await;
 
-    let completed: Result<(), Error> = cross_llama::download_model(&source, |_: DownloadProgress| {}).await;
+    cross_llama::download_model(&source, |_: DownloadProgress| {}).await.unwrap();
     let downloaded: bool = cross_llama::is_model_downloaded(&source).await.unwrap();
 
-    assert!(completed.is_ok());
     assert!(downloaded);
 }
 
