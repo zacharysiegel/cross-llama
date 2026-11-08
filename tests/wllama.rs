@@ -23,7 +23,9 @@ use futures::channel::oneshot;
 use futures::future;
 use futures::future::Either;
 use helpers::fixtures;
+use js_sys::Promise;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_test::wasm_bindgen_test;
 
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
@@ -32,10 +34,32 @@ wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 const WLLAMA_DIRECTORY_URL: &str = "/build/wllama/";
 // The runner sends small files with their length, which wllama's cache checks.
 const SMALL_MODEL_URL: &str = "/tests/data/empty.gguf";
+// Each part is a copy of `empty.gguf`.
+const PART_BYTE_COUNT: u32 = 24;
+const SPLIT_MODEL_BYTE_COUNT: u64 = 2 * PART_BYTE_COUNT as u64;
+const PARTIAL_PART_BYTE_COUNT: u32 = 10;
 
 #[wasm_bindgen(inline_js = "export function count_resource_requests(url_part) { return performance.getEntriesByType('resource').filter((entry) => entry.name.includes(url_part)).length; }")]
 extern "C" {
     fn count_resource_requests(url_part: &str) -> u32;
+}
+
+#[wasm_bindgen(inline_js = r#"
+/* Caches the first part as wllama's model download does, and the second part's first bytes without the metadata wllama
+   writes once a part is complete. */
+export async function cache_split_model_without_second_part_metadata(wllamaDirectoryUrl, firstPartUrl, secondPartUrl, secondPartByteCount) {
+  const { ModelManager } = await import(new URL('index.js', new URL(wllamaDirectoryUrl, location.href)).href);
+  const cacheManager = new ModelManager().cacheManager;
+  const firstPartAbsoluteUrl = new URL(firstPartUrl, location.href).href;
+  const secondPartAbsoluteUrl = new URL(secondPartUrl, location.href).href;
+
+  await cacheManager.download(firstPartAbsoluteUrl, { metadataAdditional: { originalURL: firstPartAbsoluteUrl } });
+  // wllama 3.8.1's storage backend, which has no public API for a file without metadata.
+  await cacheManager.sb.write(await cacheManager.getNameFromURL(secondPartAbsoluteUrl), new Blob([new Uint8Array(secondPartByteCount)]).stream());
+}
+"#)]
+extern "C" {
+    fn cache_split_model_without_second_part_metadata(wllama_directory_url: &str, first_part_url: &str, second_part_url: &str, second_part_byte_count: u32) -> Promise;
 }
 
 fn create_model_source() -> ModelSource {
@@ -51,6 +75,45 @@ fn create_small_model_source(cache_key: &str) -> ModelSource {
         model_url: format!("{SMALL_MODEL_URL}?cache_key={cache_key}-{}", js_sys::Date::now()),
         wllama_directory_url: WLLAMA_DIRECTORY_URL.to_string(),
     }
+}
+
+fn create_split_model_part_url(part_number: u32, cache_key: &str) -> String {
+    format!("/tests/data/empty-{part_number:05}-of-00002.gguf?cache_key={cache_key}")
+}
+
+/// Leaves the cache as a download stopped while writing the second of the model's two parts does.
+async fn create_split_model_source_stopped_partway(cache_key: &str) -> ModelSource {
+    create_split_model_source_without_second_part_metadata(cache_key, PARTIAL_PART_BYTE_COUNT).await
+}
+
+/// Leaves the cache as a download stopped between writing the second part's bytes and its metadata does.
+async fn create_split_model_source_stopped_before_last_metadata(cache_key: &str) -> ModelSource {
+    create_split_model_source_without_second_part_metadata(cache_key, PART_BYTE_COUNT).await
+}
+
+async fn create_split_model_source_without_second_part_metadata(cache_key: &str, second_part_byte_count: u32) -> ModelSource {
+    let unique_cache_key: String = format!("{cache_key}-{}", js_sys::Date::now());
+    let first_part_url: String = create_split_model_part_url(1, &unique_cache_key);
+    let second_part_url: String = create_split_model_part_url(2, &unique_cache_key);
+
+    JsFuture::from(cache_split_model_without_second_part_metadata(WLLAMA_DIRECTORY_URL, &first_part_url, &second_part_url, second_part_byte_count))
+        .await
+        .unwrap();
+
+    ModelSource {
+        model_url: first_part_url,
+        wllama_directory_url: WLLAMA_DIRECTORY_URL.to_string(),
+    }
+}
+
+async fn download_model_recording_last_progress(source: &ModelSource) -> Option<DownloadProgress> {
+    let mut last_progress: Option<DownloadProgress> = None;
+
+    cross_llama::download_model(source, |progress: DownloadProgress| last_progress = Some(progress))
+        .await
+        .unwrap();
+
+    last_progress
 }
 
 async fn load_test_model(sliding_window_cache: SlidingWindowCache) -> Model {
@@ -409,6 +472,49 @@ async fn is_model_downloaded_makes_no_network_request() {
     let _downloaded: bool = cross_llama::is_model_downloaded(&source).await.unwrap();
 
     assert_eq!(count_resource_requests(&source.model_url), 0);
+}
+
+#[wasm_bindgen_test]
+async fn is_model_downloaded_is_false_for_split_model_whose_download_stopped_partway() {
+    let source: ModelSource = create_split_model_source_stopped_partway("stopped-check").await;
+
+    let downloaded: Result<bool, Error> = cross_llama::is_model_downloaded(&source).await;
+
+    assert!(matches!(downloaded, Ok(false)));
+}
+
+#[wasm_bindgen_test]
+async fn download_model_leaves_split_model_whose_download_stopped_partway_downloaded() {
+    let source: ModelSource = create_split_model_source_stopped_partway("stopped-download").await;
+
+    cross_llama::download_model(&source, |_: DownloadProgress| {}).await.unwrap();
+    let downloaded: bool = cross_llama::is_model_downloaded(&source).await.unwrap();
+
+    assert!(downloaded);
+}
+
+#[wasm_bindgen_test]
+async fn download_model_counts_cached_parts_as_downloaded() {
+    let source: ModelSource = create_split_model_source_stopped_partway("stopped-progress").await;
+    let last_progress: Option<DownloadProgress> = download_model_recording_last_progress(&source).await;
+
+    let expected_progress: DownloadProgress = DownloadProgress {
+        downloaded_byte_count: SPLIT_MODEL_BYTE_COUNT,
+        total_byte_count: Some(SPLIT_MODEL_BYTE_COUNT),
+    };
+    assert_eq!(last_progress, Some(expected_progress));
+}
+
+#[wasm_bindgen_test]
+async fn download_model_counts_cached_part_without_metadata_as_downloaded() {
+    let source: ModelSource = create_split_model_source_stopped_before_last_metadata("stopped-metadata").await;
+    let last_progress: Option<DownloadProgress> = download_model_recording_last_progress(&source).await;
+
+    let expected_progress: DownloadProgress = DownloadProgress {
+        downloaded_byte_count: SPLIT_MODEL_BYTE_COUNT,
+        total_byte_count: Some(SPLIT_MODEL_BYTE_COUNT),
+    };
+    assert_eq!(last_progress, Some(expected_progress));
 }
 
 #[wasm_bindgen_test]

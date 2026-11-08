@@ -93,10 +93,11 @@ impl Model {
 
         let model_lock: ModelLock = ModelLock::acquire(&source.model_url).await?;
         let model_manager: ModelManager = wllama_instance.wllama().model_manager();
-        let model_files: WllamaModelFiles = model_cache::download_model_files(&model_manager, &model_lock, &mut |progress: DownloadProgress| {
-            on_progress(LoadProgress::from(progress));
-        })
-        .await?;
+        let model_files: WllamaModelFiles =
+            model_cache::download_model_files(&source.wllama_directory_url, &model_manager, &model_lock, &mut |progress: DownloadProgress| {
+                on_progress(LoadProgress::from(progress));
+            })
+            .await?;
         let vocabulary: GgufVocabulary = read_vocabulary(&model_files, &model_lock).await?;
 
         on_progress(LoadProgress::Loading {
@@ -394,7 +395,9 @@ mod tests {
         let wllama_instance: WllamaInstance = WllamaInstance::new(created_wllama.unchecked_into::<Wllama>());
         let model_lock: ModelLock = ModelLock::acquire(TEST_MODEL_URL).await.unwrap();
         let model_manager: ModelManager = wllama_instance.wllama().model_manager();
-        let model_files: WllamaModelFiles = model_cache::download_model_files(&model_manager, &model_lock, &mut |_: DownloadProgress| {}).await.unwrap();
+        let model_files: WllamaModelFiles = model_cache::download_model_files(WLLAMA_DIRECTORY_URL, &model_manager, &model_lock, &mut |_: DownloadProgress| {})
+            .await
+            .unwrap();
         let load_parameters: serde_json::Value = serde_json::json!({ "n_ctx": CONTEXT_TOKEN_COUNT });
 
         let loading: Promise = wllama_bridge::load_model(wllama_instance.wllama(), &model_files, &load_parameters.to_string());
