@@ -36,7 +36,7 @@ const KNOWN_REASONING_DELIMITERS: [ReasoningDelimiters; 4] = [
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReasoningDelimiters {
     pub start: &'static str,
-    /// One token of the model's vocabulary, so the backends can stop at it and count it.
+    /// One token of the model's vocabulary, which the backends stop at.
     pub end: &'static str,
     pub answer_prefix: &'static str,
 }
@@ -159,10 +159,11 @@ fn find_reasoning_delimiters(template_source: &str, is_single_token: impl Fn(&st
 fn create_reasoning_prompt(prompt: &str, reasoning_delimiters: &ReasoningDelimiters) -> String {
     let reasoning_already_open: bool = prompt.trim_end().ends_with(reasoning_delimiters.start);
 
-    match reasoning_already_open {
-        true => prompt.to_string(),
-        false => format!("{prompt}{}", reasoning_delimiters.start),
+    if reasoning_already_open {
+        return prompt.to_string();
     }
+
+    format!("{prompt}{}", reasoning_delimiters.start)
 }
 
 #[cfg(test)]
