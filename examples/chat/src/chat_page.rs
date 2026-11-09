@@ -140,10 +140,11 @@ pub fn ChatPage() -> impl IntoView {
             <Show when=move || !asked_prompt.get().is_empty()>
                 <section class="exchange">
                     <p class="prompt">{move || asked_prompt.get()}</p>
-                    <Show when=move || !reply_signals.reasoning_text.get().is_empty()>
+                    <Show when=move || !reply_signals.reasoning_text.with(|text: &String| text.trim().is_empty())>
                         <details class="reasoning">
                             <summary>"Reasoning"</summary>
-                            <p>{move || reply_signals.reasoning_text.get()}</p>
+                            // The model can surround its reasoning with whitespace.
+                            <p>{move || reply_signals.reasoning_text.with(|text: &String| text.trim().to_string())}</p>
                         </details>
                     </Show>
                     <p class="reply">{move || reply_signals.reply_text.get()}</p>
