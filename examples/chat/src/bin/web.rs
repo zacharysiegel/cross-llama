@@ -64,6 +64,7 @@ mod web {
         let can_send = move || model_state.get() == ModelState::Ready && !reply_state.get().is_replying();
         let on_submit = move |event: SubmitEvent| {
             event.prevent_default();
+
             let prompt: String = prompt_text.get_untracked();
 
             if prompt.trim().is_empty() || !can_send() {
@@ -194,6 +195,7 @@ mod web {
                 },
                 Err(error) => ReplyState::Failed(error.to_string()),
             };
+
             reply_state.set(finished_state);
         });
     }
