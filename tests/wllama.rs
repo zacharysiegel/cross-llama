@@ -34,6 +34,8 @@ wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 const WLLAMA_DIRECTORY_URL: &str = "/build/wllama/";
 // The runner sends small files with their length, which wllama's cache checks.
 const SMALL_MODEL_URL: &str = "/tests/data/empty.gguf";
+// Has the token metadata the vocabulary read needs, but no architecture, so llama.cpp cannot load it.
+const VOCABULARY_ONLY_MODEL_URL: &str = "/tests/data/vocabulary-only.gguf";
 // Each part is a copy of `empty.gguf`.
 const PART_BYTE_COUNT: u32 = 24;
 const SPLIT_MODEL_BYTE_COUNT: u64 = 2 * PART_BYTE_COUNT as u64;
@@ -197,6 +199,19 @@ async fn load_reports_download_progress_then_loading_progress() {
         Some(LoadProgress::Downloading { downloaded_byte_count, total_byte_count: None }) if *downloaded_byte_count > 0
     ));
     assert_eq!(loading_reports, &expected_loading_reports);
+}
+
+#[wasm_bindgen_test]
+async fn load_fails_when_llama_cpp_cannot_load_the_model() {
+    let source: ModelSource = ModelSource {
+        model_url: VOCABULARY_ONLY_MODEL_URL.to_string(),
+        wllama_directory_url: WLLAMA_DIRECTORY_URL.to_string(),
+    };
+
+    let load_outcome: Result<Model, Error> = Model::load(source, &fixtures::create_load_options(SlidingWindowCache::Full), |_: LoadProgress| {}).await;
+    let load_error_message: Option<String> = load_outcome.err().map(|error: Error| error.to_string());
+
+    assert!(load_error_message.is_some_and(|message: String| message.contains("llama.cpp could not load the model")));
 }
 
 #[wasm_bindgen_test]
