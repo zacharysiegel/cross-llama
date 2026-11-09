@@ -6,6 +6,7 @@ Runs a GGUF language model from Rust with one API on every target: through llama
 
 ```rust
 let model: Model = Model::load(source, &load_options, |progress: LoadProgress| { ... }).await?;
+let capability: ThinkingCapability = model.thinking_capability();
 let generation: Generation = model.generate(&request, |progress: GenerationProgress| { ... }).await?;
 model.cancel();
 model.unload().await?;
@@ -25,16 +26,20 @@ let capability: BrowserCapability = probe_browser_capability().await?;
   - wllama reports no progress while loading, so the browser backend reports `Loading` at 0 and at 1 only.
 - `GenerationRequest`:
   - messages, each a role and text, formatted as described under "Chat template"; text containing the model's control tokens is rejected, so a message cannot end its turn and forge another
-  - an optional JSON schema the reply must match
+  - an optional JSON schema the answer must match; it never constrains the reasoning
   - temperature and seed
-  - maximum tokens
+  - maximum tokens: the most the model generates, reasoning and answer together; the delimiters around the reasoning are not counted
+  - thinking (`ThinkingKind`), a thinking budget and a thinking effort (`ThinkingEffortKind`), described under "Thinking"
 - `Generation`:
-  - the reply text
+  - the answer text
+  - the reasoning, its text and token count, absent with thinking disabled
   - prompt tokens read, tokens reused from the cache, tokens generated
-  - time spent reading the prompt and generating
+  - time spent reading the prompt and generating, the reasoning included
 - `GenerationProgress`, reported as the generation advances, for progress indicators:
   - `ReadingPrompt`: tokens read so far, tokens in the prompt, and how many of those came from the cache
-  - `Generating`: tokens generated so far, the request's maximum, and the reply text so far
+  - `GeneratingReasoning`: reasoning tokens so far, the request's maximum, and the reasoning so far
+  - `GeneratingAnswer`: tokens generated so far, the reasoning's included, the request's maximum, and the answer so far
+- `thinking_capability` returns a `ThinkingCapability`: whether the crate separates the model's reasoning, and whether its template reads `enable_thinking` and `reasoning_effort`.
 - `generate` returns `GenerationError::Cancelled` or `GenerationError::Failed(Error)`, so a caller can tell a cancellation from a failure.
   - A reply that reaches the maximum tokens unfinished is a failure when a schema is set, because its JSON is incomplete; without a schema it returns the text so far.
     - Both backends share the check: a schema reply at the maximum fails unless it parses as JSON, and a top-level number also needs whitespace after it, since a cut-off number still parses. The llama.cpp server inside wllama stops at the maximum without sampling the end token, and its JSON grammar allows trailing whitespace, so a complete reply can still reach the maximum.
@@ -59,11 +64,39 @@ Tokens, batches, samplers and the cache stay inside the crate. A caller that lat
 ## Chat template
 
 - Both backends render the GGUF file's Jinja template (`tokenizer.chat_template`) with the same code, minijinja, so the same request gives the same prompt; a file without a template gets ChatML, llama.cpp's own fallback.
-- Rendering follows Hugging Face's transformers and llama.cpp's server: `trim_blocks` and `lstrip_blocks`, Python's string and dictionary methods (minijinja-contrib's `pycompat`), `raise_exception`, and the variables `messages`, `add_generation_prompt`, `bos_token`, `eos_token` and `enable_thinking`.
-- `enable_thinking` is false, so a reasoning model's prompt closes its thinking block itself and the reply holds only the answer.
+- Rendering follows Hugging Face's transformers and llama.cpp's server: `trim_blocks` and `lstrip_blocks`, Python's string and dictionary methods (minijinja-contrib's `pycompat`), `raise_exception`, and the variables `messages`, `add_generation_prompt`, `bos_token`, `eos_token`, `enable_thinking` and, when the request sets an effort, `reasoning_effort`.
+- With thinking disabled, `enable_thinking` is false, so a reasoning model's prompt closes its thinking block itself (gemma4) and the reply holds only the answer.
 - A sequence token the template writes and tokenizing also adds is removed from the rendered prompt, as llama.cpp's server does.
 - llama.cpp's built-in templates detect known templates by their text and missed gemma4's.
 - When a template rejects or drops a system message (gemma-2, Mistral v0.x), checked once when the template is read, a leading system message's text joins the next message after a newline, as llama.cpp's server does.
+
+## Thinking
+
+- `ThinkingKind::Enabled` renders `enable_thinking` true; `ThinkingEffortKind` renders `reasoning_effort` as `low`, `medium` or `high`.
+- `ThinkingCapability`:
+  - `switches_thinking` and `reads_thinking_effort`: the template reads the variable, by minijinja's static analysis joined with the lookups of one probe render. The analysis misses a variable the template sets from itself (gemma4's `set enable_thinking = enable_thinking | default(false)`); the probe misses branches it does not take.
+  - `separates_reasoning`: the crate knows delimiters whose start the template writes and whose end is one token of the vocabulary.
+- A request fails before generating when it enables thinking without known delimiters, sets a budget with thinking disabled, or sets an effort the template does not read.
+- Known delimiters, the thinking tags of llama.cpp's chat parsers (`common/chat.cpp` and `common/parsers/` in llama-cpp-sys-2 0.1.161), with the text llama.cpp writes between the end delimiter and the answer when it continues a reply:
+  - Gemma 4: `<|channel>thought` to `<channel|>`
+  - gpt-oss: `<|channel|>analysis<|message|>` to `<|end|>`, then `<|start|>assistant<|channel|>final<|message|>`
+  - Ministral 3 and Magistral: `[THINK]` to `[/THINK]`
+  - Qwen3, DeepSeek-R1, Kimi K2, LFM2, MiniCPM5 and Ling 3: `<think>` to `</think>`
+  - Forms whose answer opens with more than fixed text (Cohere's, Kimi K3's) are left out.
+- Generation, the same on both backends, in two completions of one sequence:
+  - Reasoning: the prompt plus the start delimiter, unless the template already ends with it, generated without the schema until the end delimiter, the end of the turn or the reasoning limit, the budget or the maximum, whichever is smaller.
+  - Answer: the reasoning's prompt, the reasoning as generated, the end delimiter and the answer's opening text, generated under the schema with the rest of the maximum. Both backends tokenize this text again and reuse the cached prefix, so they read the same tokens, and only the delimiter and any text that tokenizes differently are read again.
+  - The llama.cpp backend stops at the end delimiter's token. wllama's server stops at its text as a `stop` string, which it can match only because the request marks the token `preserved_tokens`; it otherwise streams a control token as no text.
+  - A budget of zero skips the reasoning completion; a reasoning that uses the whole maximum skips the answer completion, which then ends at the maximum.
+  - Each completion checks its prompt plus its token limit against the context, so the delimiters need room too and a request that leaves none fails after the reasoning.
+  - `ReadingPrompt` comes from the first completion only; `Generation`'s prompt counts and reading time are that completion's.
+  - The reasoning is returned without the whitespace around it.
+- Measured on an M4 Max with gemma4 12B QAT, twelve grader cases at temperature 0, with thinking a maximum of 4096 tokens:
+  - Thinking disabled: every reply equals Ollama's on both backends.
+  - No budget: reasoning of 123 to 760 tokens, and two that repeated a sentence until the maximum and failed; the other ten answers match the schema. Median 13.8 s with llama.cpp, 28.6 s in Chrome.
+  - Budget of 128: every answer matches the schema. Median 4.3 s with llama.cpp, 8.7 s in Chrome.
+  - Both backends give the same reasoning token counts and answers in every case.
+- llama.cpp's reasoning budget sampler and lazy grammar were not used: llama-cpp-2 exposes no budget sampler and a lazy grammar only in GBNF, not the llguidance schema grammar the llama.cpp backend uses; the server's grammar for a plain completion constrains from the first token, and its chat completion grammar for gemma4 wraps the answer in a code fence (see `wllama`). Two plain completions behave the same on both backends.
 
 ## Backends
 
@@ -102,8 +135,8 @@ Each backend is a module selected by `#[cfg]`, re-exported as the same public ty
   - The request turns off the samplers the llama.cpp server enables by default or takes from the model's metadata (`top_k`, `top_p`, `min_p` and others), so both backends sample from the whole distribution after temperature.
 - Progress: `stream` with `onData`, `return_progress` and `timings_per_token`; each chunk carries either `prompt_progress` (`total`, `cache`, `processed`) or the next piece of the reply, with the timings so far.
   - `ReadingPrompt` comes after each batch wllama reads, starting with one whose read count is the reused count.
-  - `Generating` comes with each piece of reply text; a token with no text of its own, such as whitespace the server holds back, reports nothing, so the counts can skip.
-  - `Generation`'s counts and durations come from the final timings; the server counts the end token as generated, which the backend subtracts.
+  - `GeneratingReasoning` and `GeneratingAnswer` come with each piece of reply text; a token with no text of its own, such as whitespace the server holds back, reports nothing, so the counts can skip.
+  - `Generation`'s counts and durations come from the final timings; the server counts the end token, or the token of a stop string, as generated, which the backend subtracts.
 - Cancellation: each generation has an `AbortController`, which `cancel` and dropping the `generate` future abort; generations queued before a `cancel` see the cancellation when their turn comes.
 - `Model` holds JavaScript handles, so on `wasm32` it is neither `Send` nor `Sync`.
 - Builds:
@@ -139,6 +172,8 @@ Each backend is a module selected by `#[cfg]`, re-exported as the same public ty
   - The runner sends files over 32 KB without `Content-Length`, so in these tests wllama reports no download total for the model and downloads it again for every load.
   - The script sets `NO_PROXY` for the loopback addresses, since an HTTP proxy in the environment otherwise receives the runner's requests to the WebDriver.
 - Shared request and fixture helpers for both backends' tests live in `tests/helpers/`.
+- Thinking: host unit tests for delimiter detection, the capability, request checks and the reasoning's prompts and limits.
+  - The test model has no reasoning delimiters, so both backends' public tests check that it reports no thinking control and rejects enabled thinking; in-crate tests on each backend substitute delimiters whose end the model never writes (`<unused0>`) to run both completions, with a budget ending the reasoning.
 
 ## Out of scope
 
