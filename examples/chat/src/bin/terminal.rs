@@ -82,7 +82,8 @@ mod terminal {
         let model: Model = chat::load_model(model_source, |progress: LoadProgress| {
             status_line.show(&chat::describe_load_progress(&progress));
         })
-        .await?;
+        .await
+        .map_err(create_model_failure)?;
         status_line.clear();
 
         if terminal_arguments.thinking == ThinkingKind::Enabled && !chat::offers_thinking(&model) {
@@ -121,9 +122,14 @@ mod terminal {
             }
         }
 
-        model.unload().await?;
+        model.unload().await.map_err(create_model_failure)?;
 
         Ok(())
+    }
+
+    /// Carries the model error's message alone, without the backtrace its `Display` includes.
+    fn create_model_failure(error: cross_llama::Error) -> AppError {
+        AppError::new(&chat::describe_error(&error))
     }
 
     fn read_arguments() -> TerminalArguments {

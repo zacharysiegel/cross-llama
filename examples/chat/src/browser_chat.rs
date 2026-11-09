@@ -30,7 +30,7 @@ pub fn start_loading_model(model_state: RwSignal<ModelState>) -> BrowserModel {
                 browser_model.set_value(Some(Rc::new(model)));
                 model_state.set(ModelState::Ready { offers_thinking });
             }
-            Err(error) => model_state.set(ModelState::Failed(error.to_string())),
+            Err(error) => model_state.set(ModelState::Failed(chat::describe_error(&error))),
         }
     });
 
