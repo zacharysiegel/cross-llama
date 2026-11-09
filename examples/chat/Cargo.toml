@@ -1,3 +1,9 @@
+[workspace]
+members = [
+    ".",
+    "xtask",
+]
+
 [package]
 name = "cross-llama-chat"
 version = "0.1.0"
