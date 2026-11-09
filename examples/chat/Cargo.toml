@@ -1,0 +1,24 @@
+[package]
+name = "cross-llama-chat"
+version = "0.1.0"
+edition = "2024"
+description = "A single-prompt chat that runs a local language model through cross-llama in a terminal or a browser"
+license = "MIT"
+publish = false
+
+[dependencies]
+cross-llama = { path = "../.." }
+minimer = "2.2.*"
+
+# The terminal client reads the local filesystem and a terminal, and the server binds a socket, neither of which wasm32 has.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+axum = "0.8.*"
+futures = { version = "0.3.*", default-features = false, features = ["std", "executor"] }
+tokio = { version = "1.54.*", features = ["net", "rt"] }
+tower = { version = "0.5.*", features = ["util"] }
+tower-http = { version = "0.6.*", features = ["fs"] }
+
+# The web client runs in a browser page, which other targets lack.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1.*"
+leptos = { version = "0.8.*", features = ["csr"] }
