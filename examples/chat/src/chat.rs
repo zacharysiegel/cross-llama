@@ -15,8 +15,6 @@ use cross_llama::{
     ThinkingKind,
 };
 
-pub const MODEL_FILE_NAME: &str = "qwen2.5-0.5b-instruct-q4_k_m.gguf";
-
 const CONTEXT_TOKEN_COUNT: u32 = 4096;
 const MAXIMUM_REPLY_TOKEN_COUNT: usize = 512;
 // A model this small repeats itself at temperature zero.

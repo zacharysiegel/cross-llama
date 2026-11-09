@@ -1,9 +1,3 @@
-// A browser page has no terminal; the web client serves it instead.
-#[cfg(target_arch = "wasm32")]
-fn main() {}
-
-// reads a terminal and the local filesystem, which wasm32 lacks
-#[cfg(not(target_arch = "wasm32"))]
 fn main() -> std::process::ExitCode {
     let outcome: Result<(), cross_llama_chat::AppError> = futures::executor::block_on(terminal::run());
 
@@ -16,8 +10,6 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-// reads a terminal and the local filesystem, which wasm32 lacks
-#[cfg(not(target_arch = "wasm32"))]
 mod terminal {
     use std::cell::Cell;
     use std::io::{BufRead, IsTerminal, Write};

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Builds the web client with Trunk, fetches wllama's files into build/wllama/ when they are missing or from another
-# version, and serves the site, wllama's files and the model.
+# Fetches wllama's files into build/wllama/ when they are missing or from another version, builds the web client and
+# its server with cargo-leptos through the xtask, and serves the page, wllama's files and the model.
 #
 # Usage:
 #   ./scripts/serve-web.sh [<port>]
@@ -13,18 +13,11 @@ cd "${package_dir}"
 readonly WLLAMA_DIRECTORY="build/wllama"
 readonly FETCH_WLLAMA_SCRIPT="../../scripts/fetch-wllama.sh"
 
-function check_trunk_installed {
-    local trunk_path
-    trunk_path=$(command -v trunk || true)
+port="${1:-}"
 
-    if test -z "${trunk_path}"; then
-        echo "The \`trunk\` program is required"
-        echo "  install: cargo +stable install trunk --locked"
-        exit 1
-    fi
-}
+if test -n "${port}"; then
+    export LEPTOS_SITE_ADDR="127.0.0.1:${port}"
+fi
 
-check_trunk_installed
 "${FETCH_WLLAMA_SCRIPT}" "${WLLAMA_DIRECTORY}"
-trunk build --release
-exec cargo run --quiet --release --bin server -- "$@"
+exec cargo xtask leptos serve --release
