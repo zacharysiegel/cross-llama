@@ -22,4 +22,4 @@ Reads one prompt per line from standard input until it ends, so prompts can also
 
 Fetches wllama's files into `build/wllama/`, then builds and serves the Leptos app with cargo-leptos at http://127.0.0.1:4417/ or the given port. The server renders the page, sends the cross-origin isolation headers wllama needs, and serves wllama's files and the model with `Content-Length` and `Range` support; the client runs the model in the browser. The page downloads the model into the browser's storage on its first visit and loads it from there afterwards, and shows a "Think before answering" checkbox when the model offers thinking.
 
-`cargo xtask leptos <arguments>` runs cargo-leptos. It first installs the cargo-leptos version it pins, and the wasm-bindgen command line at the version `Cargo.lock` locks, into `build/tools/` when they are missing, so the web client needs nothing beyond the Rust toolchain.
+Needs cargo-leptos and the wasm-bindgen command line at the version `Cargo.lock` locks; the script checks both and prints the install command for a missing one.
