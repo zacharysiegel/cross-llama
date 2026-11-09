@@ -1,5 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::num::NonZeroU32;
+use std::time::Duration;
 
 use futures::channel::mpsc::UnboundedSender;
 use futures::lock::{Mutex, MutexGuard};
@@ -10,12 +11,14 @@ use wasm_bindgen::{JsCast, JsValue};
 use web_sys::AbortController;
 
 use crate::chat_template::{ChatTemplate, SequenceTokens};
+use crate::generation_checks::ReplyEnding;
 use crate::gguf_vocabulary::{GgufVocabulary, VocabularyRead};
+use crate::thinking::{ModelThinking, ReasoningPlan};
 use crate::wllama::abortable_operation::{AbortableOperation, OperationEvent};
 use crate::wllama::model_cache;
 use crate::wllama::model_cache::DownloadProgress;
 use crate::wllama::model_lock::ModelLock;
-use crate::wllama::streamed_reply::StreamedReply;
+use crate::wllama::streamed_completion::{Completion, CompletionProgress, StreamedCompletion};
 use crate::wllama::wllama_bridge;
 use crate::wllama::wllama_bridge::{ModelManager, Wllama, WllamaModelFiles};
 use crate::wllama::wllama_instance::WllamaInstance;
@@ -28,9 +31,12 @@ use crate::{
     GenerationRequest,
     LoadOptions,
     LoadProgress,
+    Reasoning,
     SlidingWindowCache,
+    ThinkingCapability,
     generation_checks,
     gguf_vocabulary,
+    thinking,
 };
 
 // llama.cpp offloads at most every layer, however many more are asked for.
@@ -78,6 +84,7 @@ pub struct Model {
     context_token_count: usize,
     control_token_texts: Vec<String>,
     chat_template: ChatTemplate,
+    model_thinking: ModelThinking,
     generation_turn: Mutex<()>,
     cancellation_epoch: Cell<u64>,
     running_generation_abort_controller: RefCell<Option<AbortController>>,
@@ -110,16 +117,22 @@ impl Model {
         });
 
         let chat_template: ChatTemplate = create_chat_template(&loaded_context, &vocabulary)?;
+        let model_thinking: ModelThinking = ModelThinking::new(&chat_template, |text: &str| vocabulary.contains_token_text(text));
 
         Ok(Model {
             wllama_instance,
             context_token_count: loaded_context.context_token_count,
             control_token_texts: vocabulary.control_token_texts(&loaded_context.end_of_generation_token_ids),
             chat_template,
+            model_thinking,
             generation_turn: Mutex::new(()),
             cancellation_epoch: Cell::new(0),
             running_generation_abort_controller: RefCell::new(None),
         })
+    }
+
+    pub fn thinking_capability(&self) -> ThinkingCapability {
+        self.model_thinking.capability()
     }
 
     /// Waits for any generation already running on this model to finish first.
@@ -128,31 +141,18 @@ impl Model {
         let _generation_turn: MutexGuard<()> = self.generation_turn.lock().await;
 
         self.check_cancellation(submitted_cancellation_epoch)?;
-        check_no_control_token_text(&request.messages, &self.control_token_texts)?;
 
-        let prompt: String = self.chat_template.render_prompt(&request.messages)?;
-        let mut completion: AbortableOperation<String, dyn FnMut(String)> = self.start_completion(request, &prompt)?;
-        let _running_generation: RunningGeneration = RunningGeneration::register(&self.running_generation_abort_controller, completion.abort_controller());
-        let mut streamed_reply: StreamedReply = StreamedReply::new();
+        let prompt: String = self.render_prompt(request)?;
+        let reasoning_plan: Option<ReasoningPlan> = self.model_thinking.plan_reasoning(request, &prompt);
+        let generation_turn: GenerationTurn = GenerationTurn {
+            request,
+            submitted_cancellation_epoch,
+        };
 
-        loop {
-            let event: OperationEvent<String> = completion.next().await;
-
-            match event {
-                OperationEvent::Event(chunk_json) => {
-                    let progress_reports: Vec<GenerationProgress> = streamed_reply.apply_chunk(&chunk_json, request.maximum_token_count)?;
-                    self.report_progress(progress_reports, request.maximum_token_count, submitted_cancellation_epoch, &mut on_progress)?;
-                }
-                OperationEvent::Settled(Ok(_)) => break,
-                OperationEvent::Settled(Err(javascript_error)) => {
-                    self.check_cancellation(submitted_cancellation_epoch)?;
-                    return Err(GenerationError::Failed(wllama_bridge::create_wllama_error(&javascript_error)));
-                }
-            }
+        match reasoning_plan {
+            Some(reasoning_plan) => self.generate_reasoning_then_answer(&generation_turn, &reasoning_plan, &mut on_progress).await,
+            None => self.generate_answer_alone(&generation_turn, &prompt, &mut on_progress).await,
         }
-
-        let generation: Generation = streamed_reply.into_generation(request)?;
-        Ok(generation)
     }
 
     /// Stops the generation in progress, and any waiting for it, with `GenerationError::Cancelled`.
@@ -170,8 +170,173 @@ impl Model {
         self.wllama_instance.exit().await
     }
 
-    fn start_completion(&self, request: &GenerationRequest, prompt: &str) -> Result<AbortableOperation<String, dyn FnMut(String)>, Error> {
-        let request_json: String = create_request_json(request, prompt);
+    fn render_prompt(&self, request: &GenerationRequest) -> Result<String, Error> {
+        check_no_control_token_text(&request.messages, &self.control_token_texts)?;
+        self.model_thinking.check_request(request)?;
+
+        self.chat_template.render_prompt(&request.messages, request.thinking, request.thinking_effort)
+    }
+
+    async fn generate_answer_alone(
+        &self,
+        generation_turn: &GenerationTurn<'_>,
+        prompt: &str,
+        on_progress: &mut impl FnMut(GenerationProgress),
+    ) -> Result<Generation, GenerationError> {
+        let request: &GenerationRequest = generation_turn.request;
+        let completion_request: CompletionRequest = CompletionRequest {
+            prompt,
+            token_limit: request.maximum_token_count,
+            json_schema: request.json_schema.as_ref(),
+            stop_text: None,
+        };
+        let answer_phase: CompletionPhase = CompletionPhase {
+            reply_part: ReplyPartKind::Answer {
+                reasoning_token_count: 0,
+            },
+            prompt_progress_report: PromptProgressReportKind::Reported,
+        };
+
+        let answer: Completion = self.run_completion(generation_turn, &completion_request, &answer_phase, on_progress).await?;
+
+        generation_checks::check_reply_completes_json_value(request, &answer.text, answer.ending)?;
+
+        Ok(Generation {
+            text: answer.text,
+            reasoning: None,
+            prompt_token_count: answer.prompt_token_count,
+            reused_token_count: answer.reused_token_count,
+            generated_token_count: answer.generated_token_count,
+            prompt_reading_duration: answer.prompt_reading_duration,
+            generating_duration: answer.generating_duration,
+        })
+    }
+
+    /// Reads the prompt once: the reasoning continues it, and the answer continues the reasoning.
+    async fn generate_reasoning_then_answer(
+        &self,
+        generation_turn: &GenerationTurn<'_>,
+        reasoning_plan: &ReasoningPlan,
+        on_progress: &mut impl FnMut(GenerationProgress),
+    ) -> Result<Generation, GenerationError> {
+        let request: &GenerationRequest = generation_turn.request;
+        let reasoning_completion: Option<Completion> = self.run_reasoning(generation_turn, reasoning_plan, on_progress).await?;
+
+        let reasoning_reply_text: &str = reasoning_completion.as_ref().map_or("", |completion: &Completion| completion.text.as_str());
+        let reasoning: Reasoning = thinking::create_reasoning(
+            reasoning_reply_text,
+            reasoning_completion.as_ref().map_or(0, |completion: &Completion| completion.generated_token_count),
+        );
+        let answer_token_limit: usize = reasoning_plan.answer_token_limit(reasoning.token_count);
+        let answer_prompt: String = reasoning_plan.create_answer_prompt(reasoning_reply_text);
+        let answer_request: CompletionRequest = CompletionRequest {
+            prompt: &answer_prompt,
+            token_limit: answer_token_limit,
+            json_schema: request.json_schema.as_ref(),
+            stop_text: None,
+        };
+        let answer_reply_part: ReplyPartKind = ReplyPartKind::Answer {
+            reasoning_token_count: reasoning.token_count,
+        };
+
+        let (prompt_reading, generating_duration, answer): (PromptReading, Duration, Completion) = match reasoning_completion {
+            None => {
+                let answer_phase: CompletionPhase = CompletionPhase {
+                    reply_part: answer_reply_part,
+                    prompt_progress_report: PromptProgressReportKind::Reported,
+                };
+                let answer: Completion = self.run_completion(generation_turn, &answer_request, &answer_phase, on_progress).await?;
+                (PromptReading::from(&answer), answer.generating_duration, answer)
+            }
+            Some(reasoning_completion) if answer_token_limit == 0 => (
+                PromptReading::from(&reasoning_completion),
+                reasoning_completion.generating_duration,
+                create_empty_answer_completion(),
+            ),
+            Some(reasoning_completion) => {
+                let answer_phase: CompletionPhase = CompletionPhase {
+                    reply_part: answer_reply_part,
+                    prompt_progress_report: PromptProgressReportKind::Unreported,
+                };
+                let answer: Completion = self.run_completion(generation_turn, &answer_request, &answer_phase, on_progress).await?;
+                let generating_duration: Duration = reasoning_completion.generating_duration + answer.prompt_reading_duration + answer.generating_duration;
+                (PromptReading::from(&reasoning_completion), generating_duration, answer)
+            }
+        };
+
+        generation_checks::check_reply_completes_json_value(request, &answer.text, answer.ending)?;
+
+        Ok(Generation {
+            text: answer.text,
+            generated_token_count: reasoning.token_count + answer.generated_token_count,
+            reasoning: Some(reasoning),
+            prompt_token_count: prompt_reading.prompt_token_count,
+            reused_token_count: prompt_reading.reused_token_count,
+            prompt_reading_duration: prompt_reading.prompt_reading_duration,
+            generating_duration,
+        })
+    }
+
+    /// Ends at the model's end delimiter or end of turn, or at the token limit; `None` when the budget allows no
+    /// reasoning, which leaves the prompt unread.
+    async fn run_reasoning(
+        &self,
+        generation_turn: &GenerationTurn<'_>,
+        reasoning_plan: &ReasoningPlan,
+        on_progress: &mut impl FnMut(GenerationProgress),
+    ) -> Result<Option<Completion>, GenerationError> {
+        if reasoning_plan.reasoning_token_limit == 0 {
+            return Ok(None);
+        }
+
+        let reasoning_request: CompletionRequest = CompletionRequest {
+            prompt: &reasoning_plan.reasoning_prompt,
+            token_limit: reasoning_plan.reasoning_token_limit,
+            json_schema: None,
+            stop_text: Some(reasoning_plan.end_delimiter()),
+        };
+        let reasoning_phase: CompletionPhase = CompletionPhase {
+            reply_part: ReplyPartKind::Reasoning,
+            prompt_progress_report: PromptProgressReportKind::Reported,
+        };
+
+        let reasoning_completion: Completion = self.run_completion(generation_turn, &reasoning_request, &reasoning_phase, on_progress).await?;
+        Ok(Some(reasoning_completion))
+    }
+
+    async fn run_completion(
+        &self,
+        generation_turn: &GenerationTurn<'_>,
+        completion_request: &CompletionRequest<'_>,
+        completion_phase: &CompletionPhase,
+        on_progress: &mut impl FnMut(GenerationProgress),
+    ) -> Result<Completion, GenerationError> {
+        let mut completion: AbortableOperation<String, dyn FnMut(String)> = self.start_completion(generation_turn.request, completion_request)?;
+        let _running_generation: RunningGeneration = RunningGeneration::register(&self.running_generation_abort_controller, completion.abort_controller());
+        let mut streamed_completion: StreamedCompletion = StreamedCompletion::new();
+
+        loop {
+            let event: OperationEvent<String> = completion.next().await;
+
+            match event {
+                OperationEvent::Event(chunk_json) => {
+                    let progress_reports: Vec<CompletionProgress> = streamed_completion.apply_chunk(&chunk_json)?;
+                    self.report_progress(generation_turn, progress_reports, completion_request.token_limit, completion_phase, on_progress)?;
+                }
+                OperationEvent::Settled(Ok(_)) => break,
+                OperationEvent::Settled(Err(javascript_error)) => {
+                    self.check_cancellation(generation_turn.submitted_cancellation_epoch)?;
+                    return Err(GenerationError::Failed(wllama_bridge::create_wllama_error(&javascript_error)));
+                }
+            }
+        }
+
+        let finished_completion: Completion = streamed_completion.into_completion()?;
+        Ok(finished_completion)
+    }
+
+    fn start_completion(&self, request: &GenerationRequest, completion_request: &CompletionRequest) -> Result<AbortableOperation<String, dyn FnMut(String)>, Error> {
+        let request_json: String = create_request_json(request, completion_request);
 
         AbortableOperation::start(
             |chunk_sender: UnboundedSender<String>| {
@@ -187,18 +352,24 @@ impl Model {
     /// Checks for cancellation after each report, since the caller may cancel from its progress callback.
     fn report_progress(
         &self,
-        progress_reports: Vec<GenerationProgress>,
-        maximum_token_count: usize,
-        submitted_cancellation_epoch: u64,
+        generation_turn: &GenerationTurn<'_>,
+        progress_reports: Vec<CompletionProgress>,
+        reply_token_limit: usize,
+        completion_phase: &CompletionPhase,
         on_progress: &mut impl FnMut(GenerationProgress),
     ) -> Result<(), GenerationError> {
         for progress in progress_reports {
-            if let GenerationProgress::ReadingPrompt { prompt_token_count, .. } = progress {
-                generation_checks::check_context_capacity(prompt_token_count, maximum_token_count, self.context_token_count)?;
+            if let CompletionProgress::ReadingPrompt { prompt_token_count, .. } = progress {
+                generation_checks::check_context_capacity(prompt_token_count, reply_token_limit, self.context_token_count)?;
             }
 
-            on_progress(progress);
-            self.check_cancellation(submitted_cancellation_epoch)?;
+            let generation_progress: Option<GenerationProgress> = completion_phase.create_generation_progress(progress, generation_turn.request.maximum_token_count);
+
+            if let Some(generation_progress) = generation_progress {
+                on_progress(generation_progress);
+            }
+
+            self.check_cancellation(generation_turn.submitted_cancellation_epoch)?;
         }
 
         Ok(())
@@ -210,6 +381,102 @@ impl Model {
         }
 
         Ok(())
+    }
+}
+
+struct GenerationTurn<'request> {
+    request: &'request GenerationRequest,
+    submitted_cancellation_epoch: u64,
+}
+
+struct CompletionRequest<'request> {
+    prompt: &'request str,
+    token_limit: usize,
+    json_schema: Option<&'request serde_json::Value>,
+    /// Ends the completion, without appearing in its text.
+    stop_text: Option<&'static str>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReplyPartKind {
+    Reasoning,
+    Answer {
+        reasoning_token_count: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PromptProgressReportKind {
+    Reported,
+    /// The answer's prompt after the reasoning, which repeats the prompt already reported.
+    Unreported,
+}
+
+struct CompletionPhase {
+    reply_part: ReplyPartKind,
+    prompt_progress_report: PromptProgressReportKind,
+}
+
+impl CompletionPhase {
+    /// `None` for a report the phase does not pass on.
+    fn create_generation_progress(&self, progress: CompletionProgress, maximum_token_count: usize) -> Option<GenerationProgress> {
+        match (progress, self.reply_part, self.prompt_progress_report) {
+            (CompletionProgress::ReadingPrompt { .. }, _, PromptProgressReportKind::Unreported) => None,
+            (
+                CompletionProgress::ReadingPrompt {
+                    read_token_count,
+                    prompt_token_count,
+                    reused_token_count,
+                },
+                _,
+                PromptProgressReportKind::Reported,
+            ) => Some(GenerationProgress::ReadingPrompt {
+                read_token_count,
+                prompt_token_count,
+                reused_token_count,
+            }),
+            (CompletionProgress::Generating { generated_token_count, text }, ReplyPartKind::Reasoning, _) => Some(GenerationProgress::GeneratingReasoning {
+                generated_token_count,
+                maximum_token_count,
+                text,
+            }),
+            (CompletionProgress::Generating { generated_token_count, text }, ReplyPartKind::Answer { reasoning_token_count }, _) => {
+                Some(GenerationProgress::GeneratingAnswer {
+                    generated_token_count: reasoning_token_count + generated_token_count,
+                    maximum_token_count,
+                    text,
+                })
+            }
+        }
+    }
+}
+
+struct PromptReading {
+    prompt_token_count: usize,
+    reused_token_count: usize,
+    prompt_reading_duration: Duration,
+}
+
+impl From<&Completion> for PromptReading {
+    fn from(completion: &Completion) -> Self {
+        PromptReading {
+            prompt_token_count: completion.prompt_token_count,
+            reused_token_count: completion.reused_token_count,
+            prompt_reading_duration: completion.prompt_reading_duration,
+        }
+    }
+}
+
+/// The answer the reasoning left no tokens for.
+fn create_empty_answer_completion() -> Completion {
+    Completion {
+        text: String::new(),
+        generated_token_count: 0,
+        ending: ReplyEnding::MaximumTokenCount,
+        prompt_token_count: 0,
+        reused_token_count: 0,
+        prompt_reading_duration: Duration::ZERO,
+        generating_duration: Duration::ZERO,
     }
 }
 
@@ -283,13 +550,13 @@ async fn load_model(
 }
 
 /// Completes the prompt this crate templated, so both backends read the same prompt under the same schema grammar.
-fn create_request_json(request: &GenerationRequest, prompt: &str) -> String {
+fn create_request_json(request: &GenerationRequest, completion_request: &CompletionRequest) -> String {
     // Turns off every sampler but temperature, which the server and the model's metadata would otherwise enable.
     let mut request_json: serde_json::Value = serde_json::json!({
-        "prompt": prompt,
+        "prompt": completion_request.prompt,
         "temperature": request.temperature,
         "seed": request.seed,
-        "max_tokens": request.maximum_token_count,
+        "max_tokens": completion_request.token_limit,
         "top_k": 0,
         "top_p": 1.0,
         "min_p": 0.0,
@@ -299,8 +566,14 @@ fn create_request_json(request: &GenerationRequest, prompt: &str) -> String {
         "mirostat": 0,
     });
 
-    if let Some(json_schema) = &request.json_schema {
+    if let Some(json_schema) = completion_request.json_schema {
         request_json["json_schema"] = json_schema.clone();
+    }
+
+    // The server streams a control token's text only when it is preserved, and matches stop texts against that text.
+    if let Some(stop_text) = completion_request.stop_text {
+        request_json["stop"] = serde_json::json!([stop_text]);
+        request_json["preserved_tokens"] = serde_json::json!([stop_text]);
     }
 
     request_json.to_string()
@@ -350,8 +623,9 @@ mod tests {
     use crate::wllama::wllama::{Model, ModelSource};
     use crate::wllama::wllama_bridge;
     use crate::wllama::wllama_bridge::{ModelManager, Wllama, WllamaModelFiles};
+    use crate::thinking::ModelThinking;
     use crate::wllama::wllama_instance::WllamaInstance;
-    use crate::{Error, LoadOptions, LoadProgress, SlidingWindowCache};
+    use crate::{Error, Generation, GenerationProgress, LoadOptions, LoadProgress, SlidingWindowCache, test_model};
 
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
@@ -373,13 +647,44 @@ mod tests {
         }
     }
 
-    #[wasm_bindgen_test]
-    async fn unload_frees_the_model_in_wllama() {
-        let source: ModelSource = ModelSource {
+    fn create_test_model_source() -> ModelSource {
+        ModelSource {
             model_url: TEST_MODEL_URL.to_string(),
             wllama_directory_url: WLLAMA_DIRECTORY_URL.to_string(),
-        };
-        let model: Model = Model::load(source, &create_load_options(), |_: LoadProgress| {}).await.unwrap();
+        }
+    }
+
+    /// Returns the generation and the progress it reported.
+    async fn generate_with_stand_in_reasoning_delimiters() -> (Generation, Vec<GenerationProgress>) {
+        let mut model: Model = Model::load(create_test_model_source(), &create_load_options(), |_: LoadProgress| {}).await.unwrap();
+        model.model_thinking = ModelThinking::with_reasoning_delimiters(test_model::STAND_IN_REASONING_DELIMITERS);
+        let mut progress_reports: Vec<GenerationProgress> = Vec::new();
+
+        let generation: Generation = model
+            .generate(&test_model::create_budgeted_thinking_request(), |progress: GenerationProgress| progress_reports.push(progress))
+            .await
+            .unwrap();
+
+        (generation, progress_reports)
+    }
+
+    #[wasm_bindgen_test]
+    async fn generate_with_thinking_budget_ends_reasoning_at_budget_and_answers_with_matching_json() {
+        let (generation, _): (Generation, Vec<GenerationProgress>) = generate_with_stand_in_reasoning_delimiters().await;
+
+        test_model::assert_reasoning_ends_at_budget_and_answer_matches_schema(&generation);
+    }
+
+    #[wasm_bindgen_test]
+    async fn generate_with_thinking_reports_reasoning_progress_before_answer_progress() {
+        let (generation, progress_reports): (Generation, Vec<GenerationProgress>) = generate_with_stand_in_reasoning_delimiters().await;
+
+        test_model::assert_reasoning_progress_precedes_answer_progress(&progress_reports, &generation);
+    }
+
+    #[wasm_bindgen_test]
+    async fn unload_frees_the_model_in_wllama() {
+        let model: Model = Model::load(create_test_model_source(), &create_load_options(), |_: LoadProgress| {}).await.unwrap();
         let wllama_value: &JsValue = model.wllama_instance.wllama();
         let wllama: Wllama = wllama_value.clone().unchecked_into::<Wllama>();
 
