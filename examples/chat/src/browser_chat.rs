@@ -1,10 +1,10 @@
 use std::rc::Rc;
 
-use cross_llama::{Generation, GenerationError, LoadProgress, Model, ModelSource};
+use cross_llama::{Generation, GenerationError, LoadProgress, Model, ModelSource, ThinkingKind};
 use leptos::prelude::*;
 
 use crate::chat::ReplyProgress;
-use crate::chat_page::{ModelState, ProgressMeasure, ReplyState, StatusProgress};
+use crate::chat_page::{ModelState, ProgressMeasure, ReplySignals, ReplyState, StatusProgress};
 use crate::{chat, model_file, site_paths};
 
 /// `None` until the model has loaded.
@@ -25,8 +25,10 @@ pub fn start_loading_model(model_state: RwSignal<ModelState>) -> BrowserModel {
 
         match load_outcome {
             Ok(model) => {
+                let offers_thinking: bool = chat::offers_thinking(&model);
+
                 browser_model.set_value(Some(Rc::new(model)));
-                model_state.set(ModelState::Ready);
+                model_state.set(ModelState::Ready { offers_thinking });
             }
             Err(error) => model_state.set(ModelState::Failed(error.to_string())),
         }
@@ -35,7 +37,8 @@ pub fn start_loading_model(model_state: RwSignal<ModelState>) -> BrowserModel {
     browser_model
 }
 
-pub fn start_reply(prompt: String, browser_model: BrowserModel, reply_text: RwSignal<String>, reply_state: RwSignal<ReplyState>) {
+/// Thinks first when `thinking_chosen` and the model offers thinking.
+pub fn start_reply(prompt: String, thinking_chosen: bool, browser_model: BrowserModel, model_state: ModelState, reply_signals: ReplySignals) {
     let model: Option<Rc<Model>> = browser_model.get_value();
 
     let Some(model) = model
@@ -43,20 +46,18 @@ pub fn start_reply(prompt: String, browser_model: BrowserModel, reply_text: RwSi
         return;
     };
 
+    let thinking: ThinkingKind = choose_thinking(thinking_chosen, &model_state);
     let initial_progress: ReplyProgress = ReplyProgress::ReadingPrompt {
         read_token_count: 0,
         prompt_token_count: 0,
     };
-    reply_text.set(String::new());
-    reply_state.set(create_replying_state(&initial_progress));
+    reply_signals.reasoning_text.set(String::new());
+    reply_signals.reply_text.set(String::new());
+    reply_signals.reply_state.set(create_replying_state(&initial_progress));
 
     leptos::task::spawn_local(async move {
-        let reply_outcome: Result<Generation, GenerationError> = chat::reply(&model, &prompt, |progress: ReplyProgress| {
-            if let ReplyProgress::Generating { new_text, .. } = &progress {
-                reply_text.update(|text: &mut String| text.push_str(new_text));
-            }
-
-            reply_state.set(create_replying_state(&progress));
+        let reply_outcome: Result<Generation, GenerationError> = chat::reply(&model, &prompt, thinking, |progress: ReplyProgress| {
+            show_reply_progress(&progress, reply_signals);
         })
         .await;
 
@@ -67,8 +68,26 @@ pub fn start_reply(prompt: String, browser_model: BrowserModel, reply_text: RwSi
             Err(error) => ReplyState::Failed(chat::describe_reply_failure(&error)),
         };
 
-        reply_state.set(finished_state);
+        reply_signals.reply_state.set(finished_state);
     });
+}
+
+fn choose_thinking(thinking_chosen: bool, model_state: &ModelState) -> ThinkingKind {
+    if thinking_chosen && model_state.offers_thinking() {
+        return ThinkingKind::Enabled;
+    }
+
+    ThinkingKind::Disabled
+}
+
+fn show_reply_progress(progress: &ReplyProgress, reply_signals: ReplySignals) {
+    match progress {
+        ReplyProgress::ReadingPrompt { .. } => {}
+        ReplyProgress::Reasoning { new_text, .. } => reply_signals.reasoning_text.update(|text: &mut String| text.push_str(new_text)),
+        ReplyProgress::Generating { new_text, .. } => reply_signals.reply_text.update(|text: &mut String| text.push_str(new_text)),
+    }
+
+    reply_signals.reply_state.set(create_replying_state(progress));
 }
 
 fn create_load_status(progress: &LoadProgress) -> StatusProgress {

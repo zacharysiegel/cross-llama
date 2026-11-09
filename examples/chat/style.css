@@ -58,3 +58,14 @@ button:disabled {
 .reply {
     white-space: pre-wrap;
 }
+
+.thinking {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.reasoning {
+    color: #5c5c60;
+    white-space: pre-wrap;
+}
