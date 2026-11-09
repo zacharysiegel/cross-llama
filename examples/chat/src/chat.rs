@@ -145,8 +145,13 @@ pub fn describe_reply_progress(progress: &ReplyProgress) -> String {
 pub fn describe_reply_failure(error: &GenerationError) -> String {
     match error {
         GenerationError::Cancelled => error.to_string(),
-        GenerationError::Failed(failure) => failure.message.strip_prefix(ERROR_MESSAGE_PREFIX).unwrap_or(&failure.message).to_string(),
+        GenerationError::Failed(failure) => describe_error(failure),
     }
+}
+
+/// The error's message, without the prefix and backtrace its `Display` includes.
+pub fn describe_error(error: &cross_llama::Error) -> String {
+    error.message.strip_prefix(ERROR_MESSAGE_PREFIX).unwrap_or(&error.message).to_string()
 }
 
 pub fn describe_generation_speed(generation: &Generation) -> String {
