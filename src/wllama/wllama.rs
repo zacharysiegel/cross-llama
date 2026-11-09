@@ -13,7 +13,7 @@ use web_sys::AbortController;
 use crate::chat_template::{ChatTemplate, SequenceTokens};
 use crate::generation_checks::ReplyEnding;
 use crate::gguf_vocabulary::{GgufVocabulary, VocabularyRead};
-use crate::thinking::{ModelThinking, ReasoningPlan};
+use crate::thinking::{ModelThinking, PromptProgressReportKind, ReasoningPlan};
 use crate::wllama::abortable_operation::{AbortableOperation, OperationEvent};
 use crate::wllama::model_cache;
 use crate::wllama::model_cache::DownloadProgress;
@@ -408,13 +408,6 @@ enum ReplyPartKind {
     Answer {
         reasoning_token_count: usize,
     },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PromptProgressReportKind {
-    Reported,
-    /// The answer's prompt after the reasoning, which repeats the prompt already reported.
-    Unreported,
 }
 
 struct CompletionPhase {

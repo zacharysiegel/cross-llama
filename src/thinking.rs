@@ -141,6 +141,13 @@ impl ReasoningPlan {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptProgressReportKind {
+    Reported,
+    /// The answer's prompt after the reasoning, which repeats the prompt already reported.
+    Unreported,
+}
+
 pub fn create_reasoning(reasoning_reply_text: &str, token_count: usize) -> Reasoning {
     Reasoning {
         text: reasoning_reply_text.trim().to_string(),
