@@ -6,6 +6,8 @@
 #   <destination>/wllama.wasm         the default build
 #   <destination>/compat/wllama.js    the compatibility build's worker
 #   <destination>/compat/wllama.wasm  the compatibility build
+#   <destination>/VERSION             the wllama version written
+# Does nothing when <destination>/VERSION already names the pinned version.
 #
 # Usage:
 #   ./scripts/fetch-wllama.sh <destination directory>
@@ -28,6 +30,13 @@ destination="${1:-}"
 if test -z "${destination}"; then
     printf 'usage: %s <destination directory>\n' "$0" >&2
     exit 64
+fi
+
+readonly VERSION_PATH="${destination}/VERSION"
+fetched_version="$(cat "${VERSION_PATH}" 2>/dev/null || true)"
+
+if test "${fetched_version}" = "${WLLAMA_VERSION}"; then
+    exit 0
 fi
 
 working_directory="$(mktemp -d)"
@@ -73,5 +82,6 @@ cp "${working_directory}/wllama/package/esm/index.js" "${destination}/index.js"
 cp "${working_directory}/wllama/package/esm/wasm/wllama.wasm" "${destination}/wllama.wasm"
 cp "${working_directory}/wllama-compat/package/wasm/wllama.js" "${destination}/compat/wllama.js"
 cp "${working_directory}/wllama-compat/package/wasm/wllama.wasm" "${destination}/compat/wllama.wasm"
+printf '%s\n' "${WLLAMA_VERSION}" > "${VERSION_PATH}"
 
 printf 'wllama %s written to %s\n' "${WLLAMA_VERSION}" "${destination}"

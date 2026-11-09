@@ -53,22 +53,7 @@ check_prerequisites
 echo "Installing the Rust toolchain from rust-toolchain.toml"
 rustup toolchain install
 
-function fetch_wllama_unless_current {
-    local wanted_version
-    wanted_version=$(grep -E '^readonly WLLAMA_VERSION=' scripts/fetch-wllama.sh | cut -d'"' -f2)
-    local fetched_version
-    fetched_version=$(cat "${WLLAMA_DIRECTORY}/VERSION" 2>/dev/null || true)
-
-    if test "${fetched_version}" = "${wanted_version}"; then
-        return 0
-    fi
-
-    echo "Fetching wllama ${wanted_version} into ${WLLAMA_DIRECTORY}"
-    rm -rf "${WLLAMA_DIRECTORY}"
-    ./scripts/fetch-wllama.sh "${WLLAMA_DIRECTORY}"
-    echo "${wanted_version}" > "${WLLAMA_DIRECTORY}/VERSION"
-}
-fetch_wllama_unless_current
+./scripts/fetch-wllama.sh "${WLLAMA_DIRECTORY}"
 
 function sha256_of_file {
     local file_path="$1"
