@@ -131,7 +131,13 @@ export async function loadModel(wllama, model, loadParametersJson) {
   const loading = wllama.loadModel(model, JSON.parse(loadParametersJson));
   pendingLoads.set(wllama, loading);
   await loading;
-  const { n_ctx, list_tokens_eog, token_bos, token_eos, add_bos_token, add_eos_token } = wllama.getLoadedContextInfo();
+  const { success, n_ctx, list_tokens_eog, token_bos, token_eos, add_bos_token, add_eos_token } = wllama.getLoadedContextInfo();
+
+  // wllama 3.8.1's loadModel resolves when llama.cpp fails to load the model, and gives no reason.
+  if (!success) {
+    throw new Error('llama.cpp could not load the model');
+  }
+
   return JSON.stringify({ n_ctx, list_tokens_eog, token_bos, token_eos, add_bos_token, add_eos_token, chat_template: wllama.getChatTemplate() });
 }
 
