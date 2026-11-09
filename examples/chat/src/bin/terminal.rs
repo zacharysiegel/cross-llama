@@ -128,7 +128,7 @@ mod terminal {
 
     async fn reply_to_prompt(model: &Model, prompt: &str, status_line: &StatusLine) -> Result<(), GenerationError> {
         let generation: Generation = chat::reply(model, prompt, |progress: ReplyProgress| match &progress {
-            ReplyProgress::ReadingPrompt { .. } => status_line.show(&chat::describe_reply_progress(&progress)),
+            ReplyProgress::ReadingPrompt { .. } | ReplyProgress::Reasoning { .. } => status_line.show(&chat::describe_reply_progress(&progress)),
             ReplyProgress::Generating { new_text, .. } => {
                 status_line.clear();
                 print_and_flush(new_text);

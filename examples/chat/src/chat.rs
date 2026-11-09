@@ -12,6 +12,7 @@ use cross_llama::{
     ModelSource,
     Role,
     SlidingWindowCache,
+    ThinkingKind,
 };
 
 pub const MODEL_FILE_NAME: &str = "qwen2.5-0.5b-instruct-q4_k_m.gguf";
@@ -31,6 +32,10 @@ pub enum ReplyProgress {
     ReadingPrompt {
         read_token_count: usize,
         prompt_token_count: usize,
+    },
+    Reasoning {
+        generated_token_count: usize,
+        maximum_token_count: usize,
     },
     Generating {
         generated_token_count: usize,
@@ -100,6 +105,10 @@ pub fn describe_reply_progress(progress: &ReplyProgress) -> String {
             read_token_count,
             prompt_token_count,
         } => format!("Reading the prompt: {read_token_count} of {prompt_token_count} tokens"),
+        ReplyProgress::Reasoning {
+            generated_token_count,
+            maximum_token_count,
+        } => format!("Reasoning: {generated_token_count} of at most {maximum_token_count} tokens"),
         ReplyProgress::Generating {
             generated_token_count,
             maximum_token_count,
@@ -137,6 +146,9 @@ fn create_request(prompt: &str) -> GenerationRequest {
         temperature: TEMPERATURE,
         seed: SEED,
         maximum_token_count: MAXIMUM_REPLY_TOKEN_COUNT,
+        thinking: ThinkingKind::Disabled,
+        thinking_budget_token_count: None,
+        thinking_effort: None,
     }
 }
 
@@ -150,7 +162,15 @@ fn create_reply_progress(progress: GenerationProgress, streamed_text_length: &mu
             read_token_count,
             prompt_token_count,
         },
-        GenerationProgress::Generating {
+        GenerationProgress::GeneratingReasoning {
+            generated_token_count,
+            maximum_token_count,
+            ..
+        } => ReplyProgress::Reasoning {
+            generated_token_count,
+            maximum_token_count,
+        },
+        GenerationProgress::GeneratingAnswer {
             generated_token_count,
             maximum_token_count,
             text,
@@ -219,7 +239,7 @@ mod tests {
     }
 
     fn generating_progress(text: &str) -> GenerationProgress {
-        GenerationProgress::Generating {
+        GenerationProgress::GeneratingAnswer {
             generated_token_count: 1,
             maximum_token_count: 8,
             text: text.to_string(),
