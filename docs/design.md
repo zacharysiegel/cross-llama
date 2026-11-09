@@ -96,6 +96,7 @@ Tokens, batches, samplers and the cache stay inside the crate. A caller that lat
   - No budget: reasoning of 123 to 760 tokens, and two that repeated a sentence until the maximum and failed; the other ten answers match the schema. Median 13.8 s with llama.cpp, 28.6 s in Chrome.
   - Budget of 128: every answer matches the schema. Median 4.3 s with llama.cpp, 8.7 s in Chrome.
   - Both backends give the same reasoning token counts and answers in every case.
+  - The reasoning text can still differ in wording between backends from the same prompt tokens; one case's diverged about halfway through.
 - llama.cpp's reasoning budget sampler and lazy grammar were not used: llama-cpp-2 exposes no budget sampler and a lazy grammar only in GBNF, not the llguidance schema grammar the llama.cpp backend uses; the server's grammar for a plain completion constrains from the first token, and its chat completion grammar for gemma4 wraps the answer in a code fence (see `wllama`). Two plain completions behave the same on both backends.
 
 ## Backends
