@@ -173,7 +173,7 @@ mod terminal {
                 status_line.clear();
                 streamed_part = stream_reasoning(new_text, streamed_part);
             }
-            ReplyProgress::Generating { new_text, .. } => {
+            ReplyProgress::Answering { new_text, .. } => {
                 status_line.clear();
                 streamed_part = stream_answer(new_text, streamed_part);
             }

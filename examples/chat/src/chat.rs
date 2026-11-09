@@ -41,10 +41,10 @@ pub enum ReplyProgress {
         /// The reasoning text since the previous report.
         new_text: String,
     },
-    Generating {
+    Answering {
         generated_token_count: usize,
         maximum_token_count: usize,
-        /// The reply text since the previous report.
+        /// The answer text since the previous report.
         new_text: String,
     },
 }
@@ -92,7 +92,7 @@ pub async fn reply(
     let unstreamed_text: &str = generation.text.get(streamed_text_lengths.answer..).unwrap_or_default();
 
     if !unstreamed_text.is_empty() {
-        on_progress(ReplyProgress::Generating {
+        on_progress(ReplyProgress::Answering {
             generated_token_count: generation.generated_token_count,
             maximum_token_count: request.maximum_token_count,
             new_text: unstreamed_text.to_string(),
@@ -133,7 +133,7 @@ pub fn describe_reply_progress(progress: &ReplyProgress) -> String {
             maximum_token_count,
             ..
         } => format!("Reasoning: {generated_token_count} of at most {maximum_token_count} tokens"),
-        ReplyProgress::Generating {
+        ReplyProgress::Answering {
             generated_token_count,
             maximum_token_count,
             ..
@@ -216,7 +216,7 @@ fn create_reply_progress(progress: GenerationProgress, streamed_text_lengths: &m
             generated_token_count,
             maximum_token_count,
             text,
-        } => ReplyProgress::Generating {
+        } => ReplyProgress::Answering {
             generated_token_count,
             maximum_token_count,
             new_text: take_new_text(&text, &mut streamed_text_lengths.answer),
@@ -261,7 +261,7 @@ mod tests {
 
         assert_eq!(
             second,
-            ReplyProgress::Generating {
+            ReplyProgress::Answering {
                 generated_token_count: 1,
                 maximum_token_count: 8,
                 new_text: ", mundo".to_string(),
@@ -283,7 +283,7 @@ mod tests {
 
         assert_eq!(
             answer,
-            ReplyProgress::Generating {
+            ReplyProgress::Answering {
                 generated_token_count: 1,
                 maximum_token_count: 8,
                 new_text: "Olá".to_string(),
