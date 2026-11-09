@@ -99,7 +99,7 @@ mod terminal {
 
             if let Err(error) = reply_outcome {
                 status_line.clear();
-                eprintln!("The reply failed: {error}");
+                eprintln!("The reply failed: {}", chat::describe_reply_failure(&error));
             }
         }
 
