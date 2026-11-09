@@ -86,6 +86,8 @@ pub fn describe_load_progress(progress: &LoadProgress) -> String {
             downloaded_byte_count,
             total_byte_count: None,
         } => format!("Downloading the model: {:.0} MB", megabytes(*downloaded_byte_count)),
+        // wllama reports loading only at 0 and 1.
+        LoadProgress::Loading { loaded_proportion } if *loaded_proportion <= 0.0 => "Loading the model".to_string(),
         LoadProgress::Loading { loaded_proportion } => format!("Loading the model: {:.0}%", loaded_proportion * PERCENT_PER_PROPORTION),
     }
 }
@@ -171,16 +173,16 @@ fn megabytes(byte_count: u64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use cross_llama::GenerationProgress;
+    use cross_llama::{GenerationProgress, LoadProgress};
 
-    use super::{ReplyProgress, create_reply_progress};
+    use super::ReplyProgress;
 
     #[test]
     fn create_reply_progress_reports_only_text_since_previous_report() {
         let mut streamed_text_length: usize = 0;
-        let _first: ReplyProgress = create_reply_progress(generating_progress("Olá"), &mut streamed_text_length);
+        let _first: ReplyProgress = super::create_reply_progress(generating_progress("Olá"), &mut streamed_text_length);
 
-        let second: ReplyProgress = create_reply_progress(generating_progress("Olá, mundo"), &mut streamed_text_length);
+        let second: ReplyProgress = super::create_reply_progress(generating_progress("Olá, mundo"), &mut streamed_text_length);
 
         assert_eq!(
             second,
@@ -190,6 +192,13 @@ mod tests {
                 new_text: ", mundo".to_string(),
             },
         );
+    }
+
+    #[test]
+    fn describe_load_progress_omits_percentage_before_loading_starts() {
+        let description: String = super::describe_load_progress(&LoadProgress::Loading { loaded_proportion: 0.0 });
+
+        assert_eq!(description, "Loading the model");
     }
 
     fn generating_progress(text: &str) -> GenerationProgress {
