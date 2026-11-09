@@ -209,8 +209,9 @@ async fn load_fails_when_llama_cpp_cannot_load_the_model() {
     };
 
     let load_outcome: Result<Model, Error> = Model::load(source, &fixtures::create_load_options(SlidingWindowCache::Full), |_: LoadProgress| {}).await;
+    let load_error_message: Option<String> = load_outcome.err().map(|error: Error| error.to_string());
 
-    assert!(load_outcome.is_err());
+    assert!(load_error_message.is_some_and(|message: String| message.contains("llama.cpp could not load the model")));
 }
 
 #[wasm_bindgen_test]
