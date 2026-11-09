@@ -23,7 +23,7 @@ mod terminal {
     use std::io::{BufRead, IsTerminal, Write};
     use std::path::PathBuf;
 
-    use cross_llama::{Generation, LoadProgress, Model, ModelSource};
+    use cross_llama::{Generation, GenerationError, LoadProgress, Model, ModelSource};
     use cross_llama_chat::chat::ReplyProgress;
     use cross_llama_chat::{AppError, chat, model_file};
 
@@ -95,10 +95,16 @@ mod terminal {
                 continue;
             }
 
-            reply_to_prompt(&model, &prompt, &status_line).await?;
+            let reply_outcome: Result<(), GenerationError> = reply_to_prompt(&model, &prompt, &status_line).await;
+
+            if let Err(error) = reply_outcome {
+                status_line.clear();
+                eprintln!("The reply failed: {error}");
+            }
         }
 
         model.unload().await?;
+
         Ok(())
     }
 
@@ -120,7 +126,7 @@ mod terminal {
         Ok(Some(line.trim_end_matches(['\r', '\n']).to_string()))
     }
 
-    async fn reply_to_prompt(model: &Model, prompt: &str, status_line: &StatusLine) -> Result<(), AppError> {
+    async fn reply_to_prompt(model: &Model, prompt: &str, status_line: &StatusLine) -> Result<(), GenerationError> {
         let generation: Generation = chat::reply(model, prompt, |progress: ReplyProgress| match &progress {
             ReplyProgress::ReadingPrompt { .. } => status_line.show(&chat::describe_reply_progress(&progress)),
             ReplyProgress::Generating { new_text, .. } => {
