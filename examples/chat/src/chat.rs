@@ -23,6 +23,8 @@ const TEMPERATURE: f32 = 0.7;
 const SEED: u32 = 0;
 const BYTES_PER_MEGABYTE: f64 = 1_000_000.0;
 const PERCENT_PER_PROPORTION: f32 = 100.0;
+// minimer starts every error message with this.
+const ERROR_MESSAGE_PREFIX: &str = "Error: ";
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ReplyProgress {
@@ -106,6 +108,14 @@ pub fn describe_reply_progress(progress: &ReplyProgress) -> String {
     }
 }
 
+/// The failure's message, without the backtrace its `Display` includes.
+pub fn describe_reply_failure(error: &GenerationError) -> String {
+    match error {
+        GenerationError::Cancelled => error.to_string(),
+        GenerationError::Failed(failure) => failure.message.strip_prefix(ERROR_MESSAGE_PREFIX).unwrap_or(&failure.message).to_string(),
+    }
+}
+
 pub fn describe_generation_speed(generation: &Generation) -> String {
     let generating_seconds: f64 = generation.generating_duration.as_secs_f64();
 
@@ -173,7 +183,7 @@ fn megabytes(byte_count: u64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use cross_llama::{GenerationProgress, LoadProgress};
+    use cross_llama::{GenerationError, GenerationProgress, LoadProgress};
 
     use super::ReplyProgress;
 
@@ -192,6 +202,13 @@ mod tests {
                 new_text: ", mundo".to_string(),
             },
         );
+    }
+
+    #[test]
+    fn describe_reply_failure_gives_only_the_message() {
+        let error: GenerationError = GenerationError::Failed(cross_llama::Error::new("the prompt is too long"));
+
+        assert_eq!(super::describe_reply_failure(&error), "the prompt is too long");
     }
 
     #[test]

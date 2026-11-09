@@ -193,7 +193,7 @@ mod web {
                 Ok(generation) => ReplyState::Finished {
                     speed_description: chat::describe_generation_speed(&generation),
                 },
-                Err(error) => ReplyState::Failed(error.to_string()),
+                Err(error) => ReplyState::Failed(chat::describe_reply_failure(&error)),
             };
 
             reply_state.set(finished_state);
