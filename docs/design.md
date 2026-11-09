@@ -119,7 +119,7 @@ Each backend is a module selected by `#[cfg]`, re-exported as the same public ty
 ## Assets the app serves in the browser
 
 - wllama's JavaScript and WebAssembly files, default and compatibility builds, in the directory whose URL the app passes in `ModelSource`.
-  - `scripts/fetch-wllama.sh <directory>` writes them, from the pinned npm release, after checking each package against its published integrity hash; the app runs it as part of its build and serves the directory.
+  - `scripts/fetch-wllama.sh <directory>` writes them, from the pinned npm release, after checking each package against its published integrity hash, and records the version in a `VERSION` file there; it does nothing when that file already names the pinned version. The app runs it as part of its build and serves the directory.
   - They are not committed to this repository, and the crate's build script does not download them: a build script writes only to Cargo's output directory, which the app does not serve, and downloading there would break offline builds.
 - The model file, at the URL in `ModelSource`, with `Content-Length`; without it wllama cannot check its cached copy and downloads the model again on every load.
 - Cross-origin isolation headers (`Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy`), which wllama's multithreaded build needs.
