@@ -8,7 +8,7 @@ pub enum Role {
 }
 
 impl Role {
-    pub fn chat_template_name(self) -> &'static str {
+    pub(crate) fn chat_template_name(self) -> &'static str {
         match self {
             Role::System => "system",
             Role::User => "user",
@@ -40,7 +40,7 @@ pub enum ThinkingEffortKind {
 }
 
 impl ThinkingEffortKind {
-    pub fn chat_template_value(self) -> &'static str {
+    pub(crate) fn chat_template_value(self) -> &'static str {
         match self {
             ThinkingEffortKind::Low => "low",
             ThinkingEffortKind::Medium => "medium",
