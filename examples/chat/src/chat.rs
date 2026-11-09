@@ -88,7 +88,7 @@ pub async fn reply(
         })
         .await?;
 
-    // The final text can end with a character whose bytes were incomplete in the last report.
+    // cross-llama does not promise that the last report carries the whole answer.
     let unstreamed_text: &str = generation.text.get(streamed_text_lengths.answer..).unwrap_or_default();
 
     if !unstreamed_text.is_empty() {
