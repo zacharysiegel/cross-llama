@@ -55,7 +55,7 @@ mod tests {
 
     use crate::chat_template::ChatTemplate;
     use crate::llama_cpp::{model_chat_template, worker};
-    use crate::{ChatMessage, Role, test_model};
+    use crate::{ChatMessage, Role, ThinkingKind, test_model};
 
     fn load_test_model_vocabulary() -> LlamaModel {
         let model_parameters: LlamaModelParams = LlamaModelParams::default().with_vocab_only(true);
@@ -91,7 +91,7 @@ mod tests {
         let built_in_prompt: String = render_built_in_prompt(&model, &messages).unwrap();
 
         let chat_template: ChatTemplate = model_chat_template::read_chat_template(&model).unwrap();
-        let prompt: String = chat_template.render_prompt(&messages).unwrap();
+        let prompt: String = chat_template.render_prompt(&messages, ThinkingKind::Disabled, None).unwrap();
 
         assert_eq!(prompt, built_in_prompt);
     }

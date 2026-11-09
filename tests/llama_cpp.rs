@@ -18,6 +18,7 @@ use cross_llama::{
     ModelSource,
     Role,
     SlidingWindowCache,
+    ThinkingCapability,
 };
 use futures::channel::oneshot;
 use futures::future::Either;
@@ -43,8 +44,8 @@ fn drop_generate_future_once_generating(model: &Model, request: &GenerationReque
     let mut generating_sender: Option<oneshot::Sender<()>> = Some(generating_sender);
     let generation = Box::pin(model.generate(request, move |progress: GenerationProgress| {
         let first_generating_report: Option<oneshot::Sender<()>> = match progress {
-            GenerationProgress::Generating { .. } => generating_sender.take(),
-            GenerationProgress::ReadingPrompt { .. } => None,
+            GenerationProgress::GeneratingAnswer { .. } => generating_sender.take(),
+            GenerationProgress::ReadingPrompt { .. } | GenerationProgress::GeneratingReasoning { .. } => None,
         };
 
         if let Some(sender) = first_generating_report {
@@ -112,6 +113,32 @@ fn generate_returns_plain_reply_within_maximum() {
 
     assert!(!generation.text.trim().is_empty());
     assert!((1..=maximum_token_count).contains(&generation.generated_token_count));
+    assert!(generation.reasoning.is_none());
+}
+
+#[test]
+fn thinking_capability_reports_no_control_for_model_without_reasoning() {
+    let model: Model = load_test_model(SlidingWindowCache::Full);
+
+    let expected_capability: ThinkingCapability = ThinkingCapability {
+        separates_reasoning: false,
+        switches_thinking: false,
+        reads_thinking_effort: false,
+    };
+    assert_eq!(model.thinking_capability(), expected_capability);
+}
+
+#[test]
+fn generate_with_thinking_enabled_fails_before_reporting_progress_when_model_does_not_separate_reasoning() {
+    let model: Model = load_test_model(SlidingWindowCache::Full);
+    let request: GenerationRequest = fixtures::create_thinking_greeting_request(8);
+    let mut progress_report_count: usize = 0;
+
+    let generation_outcome: Result<Generation, GenerationError> =
+        executor::block_on(model.generate(&request, |_: GenerationProgress| progress_report_count += 1));
+
+    assert!(matches!(generation_outcome, Err(GenerationError::Failed(_))));
+    assert_eq!(progress_report_count, 0);
 }
 
 #[test]
@@ -258,27 +285,27 @@ fn generate_reports_prompt_progress_then_token_progress_in_order() {
 
     let first_generating_index: usize = progress_reports
         .iter()
-        .position(|progress| matches!(progress, GenerationProgress::Generating { .. }))
+        .position(|progress| matches!(progress, GenerationProgress::GeneratingAnswer { .. }))
         .unwrap();
     let (reading_reports, generating_reports): (&[GenerationProgress], &[GenerationProgress]) = progress_reports.split_at(first_generating_index);
     let read_token_counts: Vec<usize> = reading_reports
         .iter()
         .map(|progress| match progress {
             GenerationProgress::ReadingPrompt { read_token_count, .. } => *read_token_count,
-            GenerationProgress::Generating { .. } => panic!(),
+            GenerationProgress::GeneratingReasoning { .. } | GenerationProgress::GeneratingAnswer { .. } => panic!(),
         })
         .collect();
     let generated_token_counts: Vec<usize> = generating_reports
         .iter()
         .map(|progress| match progress {
-            GenerationProgress::Generating { generated_token_count, .. } => *generated_token_count,
-            GenerationProgress::ReadingPrompt { .. } => panic!(),
+            GenerationProgress::GeneratingAnswer { generated_token_count, .. } => *generated_token_count,
+            GenerationProgress::ReadingPrompt { .. } | GenerationProgress::GeneratingReasoning { .. } => panic!(),
         })
         .collect();
     let expected_generated_token_counts: Vec<usize> = (1..=generation.generated_token_count).collect();
     let last_reported_text: Option<&String> = generating_reports.last().map(|progress| match progress {
-        GenerationProgress::Generating { text, .. } => text,
-        GenerationProgress::ReadingPrompt { .. } => panic!(),
+        GenerationProgress::GeneratingAnswer { text, .. } => text,
+        GenerationProgress::ReadingPrompt { .. } | GenerationProgress::GeneratingReasoning { .. } => panic!(),
     });
 
     assert!(read_token_counts.len() > 1);
@@ -296,7 +323,7 @@ fn cancel_stops_generation_in_progress() {
     let mut generated_token_count_at_last_report: usize = 0;
 
     let generation_outcome: Result<Generation, GenerationError> = executor::block_on(model.generate(&request, |progress: GenerationProgress| {
-        if let GenerationProgress::Generating { generated_token_count, .. } = progress {
+        if let GenerationProgress::GeneratingAnswer { generated_token_count, .. } = progress {
             generated_token_count_at_last_report = generated_token_count;
             model.cancel();
         }
@@ -313,7 +340,7 @@ fn cancel_stops_generations_queued_before_it() {
     let mut cancelled: bool = false;
     // Cancels once, since a later cancel could reach the queued generation after it starts.
     let running_generation = model.generate(&request, |progress: GenerationProgress| {
-        if let GenerationProgress::Generating { .. } = progress
+        if let GenerationProgress::GeneratingAnswer { .. } = progress
             && !cancelled
         {
             model.cancel();
