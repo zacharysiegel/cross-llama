@@ -1,6 +1,6 @@
 [package]
 name = "cross-llama"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 description = "Runs a GGUF language model from Rust behind one async API: llama.cpp on targets other than wasm32, wllama in the browser"
 license = "MIT"
