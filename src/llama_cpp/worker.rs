@@ -25,7 +25,7 @@ use crate::llama_cpp::prompt_cache::PromptCache;
 use crate::llama_cpp::reply_text::ReplyText;
 use crate::llama_cpp::schema_constraint::SchemaConstraints;
 use crate::thinking;
-use crate::thinking::{ModelThinking, ReasoningPlan};
+use crate::thinking::{ModelThinking, PromptProgressReportKind, ReasoningPlan};
 use crate::{
     ChatMessage,
     Error,
@@ -164,17 +164,10 @@ fn tokenize_single_token(vocabulary: &LlamaVocab, text: &str) -> Option<LlamaTok
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PromptProgressReportKind {
-    Reported,
-    /// The answer's prompt after the reasoning, which repeats the prompt already reported.
-    Unreported,
-}
-
-struct PromptRead {
+struct PromptReading {
     prompt_token_count: usize,
     reused_token_count: usize,
-    reading_duration: Duration,
+    prompt_reading_duration: Duration,
     finished_at: Instant,
 }
 
@@ -266,19 +259,19 @@ impl<'model> GenerationSession<'model> {
         let prompt_tokens: Vec<LlamaToken> = self.tokenize_prompt(prompt, request.maximum_token_count)?;
         let mut answer_sampler: LlamaSampler = self.create_sampler(request, request.json_schema.as_ref())?;
 
-        let prompt_read: PromptRead = self.read_prompt(&prompt_tokens, PromptProgressReportKind::Reported, monitor)?;
+        let prompt_reading: PromptReading = self.read_prompt(&prompt_tokens, PromptProgressReportKind::Reported, monitor)?;
         let answer: Reply = self.generate_answer(&mut answer_sampler, request, request.maximum_token_count, 0, monitor)?;
-        let generating_duration: Duration = prompt_read.finished_at.elapsed();
+        let generating_duration: Duration = prompt_reading.finished_at.elapsed();
 
         generation_checks::check_reply_completes_json_value(request, &answer.text, answer.ending)?;
 
         Ok(Generation {
             text: answer.text,
             reasoning: None,
-            prompt_token_count: prompt_read.prompt_token_count,
-            reused_token_count: prompt_read.reused_token_count,
+            prompt_token_count: prompt_reading.prompt_token_count,
+            reused_token_count: prompt_reading.reused_token_count,
             generated_token_count: answer.generated_token_count,
-            prompt_reading_duration: prompt_read.reading_duration,
+            prompt_reading_duration: prompt_reading.prompt_reading_duration,
             generating_duration,
         })
     }
@@ -301,22 +294,22 @@ impl<'model> GenerationSession<'model> {
         let answer_token_limit: usize = reasoning_plan.answer_token_limit(reasoning.token_count);
         let answer_prompt: String = reasoning_plan.create_answer_prompt(reasoning_reply_text);
 
-        let (prompt_read, answer): (PromptRead, Reply) = match reasoning_run {
+        let (prompt_reading, answer): (PromptReading, Reply) = match reasoning_run {
             None => {
                 let answer_prompt_tokens: Vec<LlamaToken> = self.tokenize_prompt(&answer_prompt, answer_token_limit)?;
-                let prompt_read: PromptRead = self.read_prompt(&answer_prompt_tokens, PromptProgressReportKind::Reported, monitor)?;
+                let prompt_reading: PromptReading = self.read_prompt(&answer_prompt_tokens, PromptProgressReportKind::Reported, monitor)?;
                 let answer: Reply = self.generate_answer(&mut answer_sampler, request, answer_token_limit, reasoning.token_count, monitor)?;
-                (prompt_read, answer)
+                (prompt_reading, answer)
             }
-            Some(reasoning_run) if answer_token_limit == 0 => (reasoning_run.prompt_read, Reply::create_empty_at_maximum()),
+            Some(reasoning_run) if answer_token_limit == 0 => (reasoning_run.prompt_reading, Reply::create_empty_at_maximum()),
             Some(reasoning_run) => {
                 let answer_prompt_tokens: Vec<LlamaToken> = self.tokenize_prompt(&answer_prompt, answer_token_limit)?;
                 self.read_prompt(&answer_prompt_tokens, PromptProgressReportKind::Unreported, monitor)?;
                 let answer: Reply = self.generate_answer(&mut answer_sampler, request, answer_token_limit, reasoning.token_count, monitor)?;
-                (reasoning_run.prompt_read, answer)
+                (reasoning_run.prompt_reading, answer)
             }
         };
-        let generating_duration: Duration = prompt_read.finished_at.elapsed();
+        let generating_duration: Duration = prompt_reading.finished_at.elapsed();
 
         generation_checks::check_reply_completes_json_value(request, &answer.text, answer.ending)?;
 
@@ -324,9 +317,9 @@ impl<'model> GenerationSession<'model> {
             text: answer.text,
             generated_token_count: reasoning.token_count + answer.generated_token_count,
             reasoning: Some(reasoning),
-            prompt_token_count: prompt_read.prompt_token_count,
-            reused_token_count: prompt_read.reused_token_count,
-            prompt_reading_duration: prompt_read.reading_duration,
+            prompt_token_count: prompt_reading.prompt_token_count,
+            reused_token_count: prompt_reading.reused_token_count,
+            prompt_reading_duration: prompt_reading.prompt_reading_duration,
             generating_duration,
         })
     }
@@ -349,7 +342,7 @@ impl<'model> GenerationSession<'model> {
         let prompt_tokens: Vec<LlamaToken> = self.tokenize_prompt(&reasoning_plan.reasoning_prompt, request.maximum_token_count)?;
         let mut reasoning_sampler: LlamaSampler = self.create_sampler(request, None)?;
 
-        let prompt_read: PromptRead = self.read_prompt(&prompt_tokens, PromptProgressReportKind::Reported, monitor)?;
+        let prompt_reading: PromptReading = self.read_prompt(&prompt_tokens, PromptProgressReportKind::Reported, monitor)?;
         let reply: Reply = self.generate_reply(
             &mut reasoning_sampler,
             reasoning_plan.reasoning_token_limit,
@@ -364,7 +357,7 @@ impl<'model> GenerationSession<'model> {
 
         Ok(Some(ReasoningRun {
             reply,
-            prompt_read,
+            prompt_reading,
         }))
     }
 
@@ -441,7 +434,7 @@ impl<'model> GenerationSession<'model> {
         prompt_tokens: &[LlamaToken],
         report_kind: PromptProgressReportKind,
         monitor: &GenerationMonitor,
-    ) -> Result<PromptRead, GenerationError> {
+    ) -> Result<PromptReading, GenerationError> {
         let reused_token_count: usize = self.prompt_cache.keep_reusable_prefix(&mut self.context, prompt_tokens)?;
         let unread_tokens: &[LlamaToken] = &prompt_tokens[reused_token_count..];
         let reading_started_at: Instant = Instant::now();
@@ -461,10 +454,10 @@ impl<'model> GenerationSession<'model> {
 
         self.context.synchronize();
 
-        Ok(PromptRead {
+        Ok(PromptReading {
             prompt_token_count: prompt_tokens.len(),
             reused_token_count,
-            reading_duration: reading_started_at.elapsed(),
+            prompt_reading_duration: reading_started_at.elapsed(),
             finished_at: Instant::now(),
         })
     }
@@ -526,7 +519,7 @@ impl Reply {
 
 struct ReasoningRun {
     reply: Reply,
-    prompt_read: PromptRead,
+    prompt_reading: PromptReading,
 }
 
 struct GenerationMonitor<'job> {
