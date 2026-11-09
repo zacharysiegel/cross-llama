@@ -2,9 +2,8 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::generation_checks;
+use crate::Error;
 use crate::generation_checks::ReplyEnding;
-use crate::{Error, Generation, GenerationProgress, GenerationRequest};
 
 const MILLISECONDS_PER_SECOND: f64 = 1000.0;
 
@@ -26,7 +25,7 @@ struct ChunkChoice {
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum FinishReason {
-    /// The model ended its reply; the server counts the ending token among the generated ones.
+    /// The model ended its reply or wrote a stop text; the server counts that token among the generated ones.
     Stop,
     Length,
 }
@@ -57,16 +56,41 @@ struct ChunkTimings {
     generating_milliseconds: f64,
 }
 
-/// The reply as its chunks arrive.
-pub struct StreamedReply {
+#[derive(Clone, Debug, PartialEq)]
+pub enum CompletionProgress {
+    ReadingPrompt {
+        /// Includes the reused tokens.
+        read_token_count: usize,
+        prompt_token_count: usize,
+        reused_token_count: usize,
+    },
+    Generating {
+        generated_token_count: usize,
+        text: String,
+    },
+}
+
+pub struct Completion {
+    pub text: String,
+    /// Excludes the token that ended the completion.
+    pub generated_token_count: usize,
+    pub ending: ReplyEnding,
+    pub prompt_token_count: usize,
+    pub reused_token_count: usize,
+    pub prompt_reading_duration: Duration,
+    pub generating_duration: Duration,
+}
+
+/// A completion as its chunks arrive.
+pub struct StreamedCompletion {
     text: String,
     latest_timings: Option<ChunkTimings>,
     finish_reason: Option<FinishReason>,
 }
 
-impl StreamedReply {
+impl StreamedCompletion {
     pub fn new() -> Self {
-        StreamedReply {
+        StreamedCompletion {
             text: String::new(),
             latest_timings: None,
             finish_reason: None,
@@ -74,16 +98,16 @@ impl StreamedReply {
     }
 
     /// Returns the progress the chunk reports, if any.
-    pub fn apply_chunk(&mut self, chunk_json: &str, maximum_token_count: usize) -> Result<Vec<GenerationProgress>, Error> {
+    pub fn apply_chunk(&mut self, chunk_json: &str) -> Result<Vec<CompletionProgress>, Error> {
         let chunk: CompletionChunk = serde_json::from_str(chunk_json)?;
-        let mut progress_reports: Vec<GenerationProgress> = Vec::new();
+        let mut progress_reports: Vec<CompletionProgress> = Vec::new();
 
         if let Some(timings) = chunk.timings {
             self.latest_timings = Some(timings);
         }
 
         if let Some(prompt_progress) = chunk.prompt_progress {
-            progress_reports.push(GenerationProgress::ReadingPrompt {
+            progress_reports.push(CompletionProgress::ReadingPrompt {
                 read_token_count: prompt_progress.read_token_count,
                 prompt_token_count: prompt_progress.prompt_token_count,
                 reused_token_count: prompt_progress.reused_token_count,
@@ -102,9 +126,8 @@ impl StreamedReply {
             }
 
             self.text.push_str(&text);
-            progress_reports.push(GenerationProgress::Generating {
+            progress_reports.push(CompletionProgress::Generating {
                 generated_token_count: self.latest_timings.map_or(0, |timings| timings.generated_token_count),
-                maximum_token_count,
                 text: self.text.clone(),
             });
         }
@@ -112,7 +135,7 @@ impl StreamedReply {
         Ok(progress_reports)
     }
 
-    pub fn into_generation(self, request: &GenerationRequest) -> Result<Generation, Error> {
+    pub fn into_completion(self) -> Result<Completion, Error> {
         let (Some(timings), Some(finish_reason)) = (self.latest_timings, self.finish_reason)
         else {
             return Err(Error::new("wllama finished the generation without reporting how the reply ended"));
@@ -123,13 +146,12 @@ impl StreamedReply {
             FinishReason::Length => (ReplyEnding::MaximumTokenCount, timings.generated_token_count),
         };
 
-        generation_checks::check_reply_completes_json_value(request, &self.text, ending)?;
-
-        Ok(Generation {
+        Ok(Completion {
             text: self.text,
+            generated_token_count,
+            ending,
             prompt_token_count: timings.reused_token_count + timings.read_token_count,
             reused_token_count: timings.reused_token_count,
-            generated_token_count,
             prompt_reading_duration: create_duration(timings.prompt_reading_milliseconds),
             generating_duration: create_duration(timings.generating_milliseconds),
         })

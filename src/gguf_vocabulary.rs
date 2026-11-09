@@ -61,6 +61,10 @@ impl GgufVocabulary {
         self.token_texts.get(token_index).map(String::as_str)
     }
 
+    pub fn contains_token_text(&self, text: &str) -> bool {
+        self.token_texts.iter().any(|token_text: &String| token_text == text)
+    }
+
     /// The texts that tokenizing a templated prompt reads as control tokens, so message text must not contain them.
     pub fn control_token_texts(&self, end_of_generation_token_ids: &[u32]) -> Vec<String> {
         let mut control_token_texts: Vec<String> = Vec::new();
@@ -305,6 +309,14 @@ mod tests {
         // gemma-3's beginning-of-sequence token.
         assert_eq!(vocabulary.token_text(2), Some("<bos>"));
         assert_eq!(vocabulary.token_text(u32::MAX), None);
+    }
+
+    #[test]
+    fn contains_token_text_matches_whole_token_text_only() {
+        let vocabulary: GgufVocabulary = read_test_model_vocabulary();
+
+        assert!(vocabulary.contains_token_text("<unused0>"));
+        assert!(!vocabulary.contains_token_text("<unused0"));
     }
 
     #[test]

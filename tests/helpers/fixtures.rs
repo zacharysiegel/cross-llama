@@ -1,4 +1,4 @@
-use cross_llama::{ChatMessage, GenerationRequest, LoadOptions, Role, SlidingWindowCache};
+use cross_llama::{ChatMessage, GenerationRequest, LoadOptions, Role, SlidingWindowCache, ThinkingKind};
 
 /// Relative to the crate root; `scripts/setup.sh` fetches it.
 pub const TEST_MODEL_RELATIVE_PATH: &str = "build/models/gemma-3-270m-it-Q8_0.gguf";
@@ -38,6 +38,9 @@ pub fn create_request(messages: Vec<ChatMessage>, json_schema: Option<serde_json
         temperature: 0.0,
         seed: 0,
         maximum_token_count,
+        thinking: ThinkingKind::Disabled,
+        thinking_budget_token_count: None,
+        thinking_effort: None,
     }
 }
 
@@ -55,6 +58,13 @@ pub fn create_grading_request(student_text: &str, maximum_token_count: usize) ->
 
 pub fn create_context_overflowing_grading_request() -> GenerationRequest {
     create_grading_request("Eu sou cansado.", CONTEXT_OVERFLOWING_MAXIMUM_TOKEN_COUNT)
+}
+
+pub fn create_thinking_greeting_request(maximum_token_count: usize) -> GenerationRequest {
+    let mut request: GenerationRequest = create_greeting_request(maximum_token_count);
+    request.thinking = ThinkingKind::Enabled;
+
+    request
 }
 
 pub fn create_capital_question_request(maximum_token_count: usize) -> GenerationRequest {
@@ -96,6 +106,9 @@ pub fn create_high_temperature_greeting_requests() -> Vec<GenerationRequest> {
             temperature: HIGH_TEMPERATURE,
             seed,
             maximum_token_count: 1,
+            thinking: ThinkingKind::Disabled,
+            thinking_budget_token_count: None,
+            thinking_effort: None,
         })
         .collect()
 }

@@ -19,7 +19,7 @@ use crate::llama_cpp::worker::{
     WorkerEvent,
     WorkerStart,
 };
-use crate::{Error, Generation, GenerationError, GenerationProgress, GenerationRequest, LoadOptions, LoadProgress};
+use crate::{Error, Generation, GenerationError, GenerationProgress, GenerationRequest, LoadOptions, LoadProgress, ThinkingCapability};
 
 const WORKER_THREAD_NAME: &str = "cross-llama";
 const WORKER_JOINER_THREAD_NAME: &str = "cross-llama-unload";
@@ -34,6 +34,7 @@ pub struct Model {
     command_sender: Sender<WorkerCommand>,
     cancellation_epoch: Arc<AtomicU64>,
     worker_thread: Option<JoinHandle<()>>,
+    thinking_capability: ThinkingCapability,
 }
 
 impl Model {
@@ -54,17 +55,22 @@ impl Model {
             .spawn(move || worker::run_worker(worker_start))?;
 
         // On failure, or when this future is dropped, the thread stops by itself.
-        let load_outcome: Option<Result<(), Error>> = receive_until_finished(load_event_receiver, on_progress).await;
+        let load_outcome: Option<Result<ThinkingCapability, Error>> = receive_until_finished(load_event_receiver, on_progress).await;
 
         match load_outcome {
-            Some(Ok(())) => Ok(Model {
+            Some(Ok(thinking_capability)) => Ok(Model {
                 command_sender,
                 cancellation_epoch,
                 worker_thread: Some(worker_thread),
+                thinking_capability,
             }),
             Some(Err(load_error)) => Err(load_error),
             None => Err(Error::new("the model's thread stopped while loading")),
         }
+    }
+
+    pub fn thinking_capability(&self) -> ThinkingCapability {
+        self.thinking_capability
     }
 
     /// Waits for any generation already running on this model to finish first.
