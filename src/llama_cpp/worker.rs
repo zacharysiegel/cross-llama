@@ -587,8 +587,8 @@ mod tests {
         LlamaModel::load_from_file(worker::get_llama_backend().unwrap(), test_model::get_test_model_path(), &model_parameters).unwrap()
     }
 
-    /// Returns the generation and the progress it reported.
-    fn generate_with_stand_in_reasoning_delimiters(request: &GenerationRequest) -> (Generation, Vec<GenerationProgress>) {
+    /// Returns the generation's outcome and the progress it reported.
+    fn generate_with_stand_in_reasoning_delimiters(request: &GenerationRequest) -> (Result<Generation, GenerationError>, Vec<GenerationProgress>) {
         let model: LlamaModel = load_test_model();
         let load_options: LoadOptions = LoadOptions {
             context_token_count: CONTEXT_TOKEN_COUNT,
@@ -612,21 +612,32 @@ mod tests {
             })
             .collect();
 
-        (generation_outcome.unwrap(), progress_reports)
+        (generation_outcome, progress_reports)
     }
 
     #[test]
     fn generate_with_thinking_budget_ends_reasoning_at_budget_and_answers_with_matching_json() {
-        let (generation, _): (Generation, Vec<GenerationProgress>) = generate_with_stand_in_reasoning_delimiters(&test_model::create_budgeted_thinking_request());
+        let (generation_outcome, _): (Result<Generation, GenerationError>, Vec<GenerationProgress>) =
+            generate_with_stand_in_reasoning_delimiters(&test_model::create_budgeted_thinking_request());
 
-        test_model::assert_reasoning_ends_at_budget_and_answer_matches_schema(&generation);
+        test_model::assert_reasoning_ends_at_budget_and_answer_matches_schema(&generation_outcome.unwrap());
     }
 
     #[test]
     fn generate_with_thinking_reports_reasoning_progress_before_answer_progress() {
-        let (generation, progress_reports): (Generation, Vec<GenerationProgress>) =
+        let (generation_outcome, progress_reports): (Result<Generation, GenerationError>, Vec<GenerationProgress>) =
             generate_with_stand_in_reasoning_delimiters(&test_model::create_budgeted_thinking_request());
 
-        test_model::assert_reasoning_progress_precedes_answer_progress(&progress_reports, &generation);
+        test_model::assert_reasoning_progress_precedes_answer_progress(&progress_reports, &generation_outcome.unwrap());
+    }
+
+    #[test]
+    fn generate_with_thinking_budget_rejects_maximum_exceeding_context_before_reporting_progress() {
+        let request: GenerationRequest = test_model::create_budgeted_thinking_request_with_context_filling_maximum(CONTEXT_TOKEN_COUNT);
+
+        let (generation_outcome, progress_reports): (Result<Generation, GenerationError>, Vec<GenerationProgress>) = generate_with_stand_in_reasoning_delimiters(&request);
+
+        assert!(generation_outcome.is_err());
+        assert!(progress_reports.is_empty());
     }
 }

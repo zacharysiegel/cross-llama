@@ -187,6 +187,7 @@ impl Model {
         let completion_request: CompletionRequest = CompletionRequest {
             prompt,
             token_limit: request.maximum_token_count,
+            context_check_token_count: request.maximum_token_count,
             json_schema: request.json_schema.as_ref(),
             stop_text: None,
         };
@@ -232,6 +233,7 @@ impl Model {
         let answer_request: CompletionRequest = CompletionRequest {
             prompt: &answer_prompt,
             token_limit: answer_token_limit,
+            context_check_token_count: answer_token_limit,
             json_schema: request.json_schema.as_ref(),
             stop_text: None,
         };
@@ -292,6 +294,7 @@ impl Model {
         let reasoning_request: CompletionRequest = CompletionRequest {
             prompt: &reasoning_plan.reasoning_prompt,
             token_limit: reasoning_plan.reasoning_token_limit,
+            context_check_token_count: generation_turn.request.maximum_token_count,
             json_schema: None,
             stop_text: Some(reasoning_plan.end_delimiter()),
         };
@@ -321,7 +324,7 @@ impl Model {
             match event {
                 OperationEvent::Event(chunk_json) => {
                     let progress_reports: Vec<CompletionProgress> = streamed_completion.apply_chunk(&chunk_json)?;
-                    self.report_progress(generation_turn, progress_reports, completion_request.token_limit, completion_phase, on_progress)?;
+                    self.report_progress(generation_turn, progress_reports, completion_request.context_check_token_count, completion_phase, on_progress)?;
                 }
                 OperationEvent::Settled(Ok(_)) => break,
                 OperationEvent::Settled(Err(javascript_error)) => {
@@ -354,13 +357,13 @@ impl Model {
         &self,
         generation_turn: &GenerationTurn<'_>,
         progress_reports: Vec<CompletionProgress>,
-        reply_token_limit: usize,
+        context_check_token_count: usize,
         completion_phase: &CompletionPhase,
         on_progress: &mut impl FnMut(GenerationProgress),
     ) -> Result<(), GenerationError> {
         for progress in progress_reports {
             if let CompletionProgress::ReadingPrompt { prompt_token_count, .. } = progress {
-                generation_checks::check_context_capacity(prompt_token_count, reply_token_limit, self.context_token_count)?;
+                generation_checks::check_context_capacity(prompt_token_count, context_check_token_count, self.context_token_count)?;
             }
 
             let generation_progress: Option<GenerationProgress> = completion_phase.create_generation_progress(progress, generation_turn.request.maximum_token_count);
@@ -392,6 +395,8 @@ struct GenerationTurn<'request> {
 struct CompletionRequest<'request> {
     prompt: &'request str,
     token_limit: usize,
+    /// The reply tokens the context must hold beside the prompt; at least `token_limit`.
+    context_check_token_count: usize,
     json_schema: Option<&'request serde_json::Value>,
     /// Ends the completion, without appearing in its text.
     stop_text: Option<&'static str>,
@@ -625,7 +630,7 @@ mod tests {
     use crate::wllama::wllama_bridge::{ModelManager, Wllama, WllamaModelFiles};
     use crate::thinking::ModelThinking;
     use crate::wllama::wllama_instance::WllamaInstance;
-    use crate::{Error, Generation, GenerationProgress, LoadOptions, LoadProgress, SlidingWindowCache, test_model};
+    use crate::{Error, Generation, GenerationError, GenerationProgress, GenerationRequest, LoadOptions, LoadProgress, SlidingWindowCache, test_model};
 
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
@@ -654,32 +659,44 @@ mod tests {
         }
     }
 
-    /// Returns the generation and the progress it reported.
-    async fn generate_with_stand_in_reasoning_delimiters() -> (Generation, Vec<GenerationProgress>) {
+    /// Returns the generation's outcome and the progress it reported.
+    async fn generate_with_stand_in_reasoning_delimiters(request: &GenerationRequest) -> (Result<Generation, GenerationError>, Vec<GenerationProgress>) {
         let mut model: Model = Model::load(create_test_model_source(), &create_load_options(), |_: LoadProgress| {}).await.unwrap();
         model.model_thinking = ModelThinking::with_reasoning_delimiters(test_model::STAND_IN_REASONING_DELIMITERS);
         let mut progress_reports: Vec<GenerationProgress> = Vec::new();
 
-        let generation: Generation = model
-            .generate(&test_model::create_budgeted_thinking_request(), |progress: GenerationProgress| progress_reports.push(progress))
-            .await
-            .unwrap();
+        let generation_outcome: Result<Generation, GenerationError> = model
+            .generate(request, |progress: GenerationProgress| progress_reports.push(progress))
+            .await;
 
-        (generation, progress_reports)
+        (generation_outcome, progress_reports)
     }
 
     #[wasm_bindgen_test]
     async fn generate_with_thinking_budget_ends_reasoning_at_budget_and_answers_with_matching_json() {
-        let (generation, _): (Generation, Vec<GenerationProgress>) = generate_with_stand_in_reasoning_delimiters().await;
+        let (generation_outcome, _): (Result<Generation, GenerationError>, Vec<GenerationProgress>) =
+            generate_with_stand_in_reasoning_delimiters(&test_model::create_budgeted_thinking_request()).await;
 
-        test_model::assert_reasoning_ends_at_budget_and_answer_matches_schema(&generation);
+        test_model::assert_reasoning_ends_at_budget_and_answer_matches_schema(&generation_outcome.unwrap());
     }
 
     #[wasm_bindgen_test]
     async fn generate_with_thinking_reports_reasoning_progress_before_answer_progress() {
-        let (generation, progress_reports): (Generation, Vec<GenerationProgress>) = generate_with_stand_in_reasoning_delimiters().await;
+        let (generation_outcome, progress_reports): (Result<Generation, GenerationError>, Vec<GenerationProgress>) =
+            generate_with_stand_in_reasoning_delimiters(&test_model::create_budgeted_thinking_request()).await;
 
-        test_model::assert_reasoning_progress_precedes_answer_progress(&progress_reports, &generation);
+        test_model::assert_reasoning_progress_precedes_answer_progress(&progress_reports, &generation_outcome.unwrap());
+    }
+
+    #[wasm_bindgen_test]
+    async fn generate_with_thinking_budget_rejects_maximum_exceeding_context_before_reporting_progress() {
+        let request: GenerationRequest = test_model::create_budgeted_thinking_request_with_context_filling_maximum(CONTEXT_TOKEN_COUNT);
+
+        let (generation_outcome, progress_reports): (Result<Generation, GenerationError>, Vec<GenerationProgress>) =
+            generate_with_stand_in_reasoning_delimiters(&request).await;
+
+        assert!(generation_outcome.is_err());
+        assert!(progress_reports.is_empty());
     }
 
     #[wasm_bindgen_test]

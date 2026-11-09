@@ -88,7 +88,7 @@ Tokens, batches, samplers and the cache stay inside the crate. A caller that lat
   - Answer: the reasoning's prompt, the reasoning as generated, the end delimiter and the answer's opening text, generated under the schema with the rest of the maximum. Both backends tokenize this text again and reuse the cached prefix, so they read the same tokens, and only the delimiter and any text that tokenizes differently are read again.
   - The llama.cpp backend stops at the end delimiter's token. wllama's server stops at its text as a `stop` string, which it can match only because the request marks the token `preserved_tokens`; it otherwise streams a control token as no text.
   - A budget of zero skips the reasoning completion; a reasoning that uses the whole maximum skips the answer completion, which then ends at the maximum.
-  - Each completion checks its prompt plus its token limit against the context, so the delimiters need room too and a request that leaves none fails after the reasoning.
+  - The reasoning's prompt is checked against the context with the whole maximum, before any progress, and the answer's prompt with its own token limit; the delimiters need room too, so a request that leaves none fails after the reasoning.
   - `ReadingPrompt` comes from the first completion only; `Generation`'s prompt counts and reading time are that completion's.
   - The reasoning is returned without the whitespace around it.
 - Measured on an M4 Max with gemma4 12B QAT, twelve grader cases at temperature 0, with thinking a maximum of 4096 tokens:

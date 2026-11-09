@@ -43,6 +43,14 @@ pub fn create_budgeted_thinking_request() -> GenerationRequest {
     }
 }
 
+/// Leaves the context room for the reasoning's budget but not for the whole maximum.
+pub fn create_budgeted_thinking_request_with_context_filling_maximum(context_token_count: u32) -> GenerationRequest {
+    let mut request: GenerationRequest = create_budgeted_thinking_request();
+    request.maximum_token_count = usize::try_from(context_token_count).unwrap();
+
+    request
+}
+
 pub fn assert_reasoning_ends_at_budget_and_answer_matches_schema(generation: &Generation) {
     let reasoning: &Reasoning = generation.reasoning.as_ref().unwrap();
     let answer: serde_json::Value = serde_json::from_str(&generation.text).unwrap();
