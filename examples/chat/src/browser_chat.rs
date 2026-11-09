@@ -84,7 +84,7 @@ fn show_reply_progress(progress: &ReplyProgress, reply_signals: ReplySignals) {
     match progress {
         ReplyProgress::ReadingPrompt { .. } => {}
         ReplyProgress::Reasoning { new_text, .. } => reply_signals.reasoning_text.update(|text: &mut String| text.push_str(new_text)),
-        ReplyProgress::Generating { new_text, .. } => reply_signals.reply_text.update(|text: &mut String| text.push_str(new_text)),
+        ReplyProgress::Answering { new_text, .. } => reply_signals.reply_text.update(|text: &mut String| text.push_str(new_text)),
     }
 
     reply_signals.reply_state.set(create_replying_state(progress));
