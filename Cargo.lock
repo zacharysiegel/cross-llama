@@ -147,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "cross-llama"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "futures",
  "js-sys",

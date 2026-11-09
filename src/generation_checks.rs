@@ -52,7 +52,7 @@ fn is_complete_json_value(reply_text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::generation_checks::ReplyEnding;
-    use crate::{Error, GenerationRequest, generation_checks};
+    use crate::{Error, GenerationRequest, ThinkingKind, generation_checks};
 
     fn create_request(json_schema: serde_json::Value) -> GenerationRequest {
         GenerationRequest {
@@ -61,6 +61,9 @@ mod tests {
             temperature: 0.0,
             seed: 0,
             maximum_token_count: 8,
+            thinking: ThinkingKind::Disabled,
+            thinking_budget_token_count: None,
+            thinking_effort: None,
         }
     }
 

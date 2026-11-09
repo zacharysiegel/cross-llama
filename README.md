@@ -1,13 +1,13 @@
 # cross-llama
 
-Runs a GGUF language model from Rust behind one async API: through llama.cpp on targets other than `wasm32`, and through wllama (llama.cpp compiled to WebAssembly) in the browser. Both format prompts with the model file's own Jinja chat template, with thinking off. The design is in [docs/design.md](./docs/design.md).
+Runs a GGUF language model from Rust behind one async API: through llama.cpp on targets other than `wasm32`, and through wllama (llama.cpp compiled to WebAssembly) in the browser. Both format prompts with the model file's own Jinja chat template, and return a reasoning model's reasoning apart from its answer.
 
-[examples/chat/](./examples/chat/) is a chat demo with a web client and a terminal client for macOS and Linux.
+[examples/chat/](./examples/chat/) is a chat demo with a terminal client for macOS and Linux and a web client, a Leptos app that `cargo xtask` builds and serves with cargo-leptos.
 
 ## Example
 
 ```rust
-use cross_llama::{ChatMessage, Generation, GenerationRequest, LoadOptions, Model, ModelSource, Role, SlidingWindowCache};
+use cross_llama::{ChatMessage, Generation, GenerationRequest, LoadOptions, Model, ModelSource, Role, SlidingWindowCache, ThinkingKind};
 
 let load_options: LoadOptions = LoadOptions {
     context_token_count: 4096,
@@ -25,6 +25,9 @@ let request: GenerationRequest = GenerationRequest {
     temperature: 0.0,
     seed: 0,
     maximum_token_count: 64,
+    thinking: ThinkingKind::Disabled,
+    thinking_budget_token_count: None,
+    thinking_effort: None,
 };
 let generation: Generation = model.generate(&request, |_progress| {}).await?;
 println!("{}", generation.text);
@@ -46,6 +49,13 @@ In the browser only:
 - `probe_browser_capability()` reports WebGPU, cross-origin isolation, the wllama build the browser gets, storage and device memory.
 
 `Model::cancel` stops the generation in progress, which then returns `GenerationError::Cancelled`. The crate does not depend on an async runtime; any executor can drive the futures.
+
+## Thinking
+
+- `thinking: ThinkingKind::Enabled` generates the reasoning first, unconstrained, then the answer, under the JSON schema when one is set; `generation.reasoning` holds the reasoning, `generation.text` the answer.
+- `thinking_budget_token_count` caps the reasoning's tokens; `maximum_token_count` caps reasoning and answer together.
+- `thinking_effort` sets the template's `reasoning_effort`.
+- `model.thinking_capability()` tells which of these the loaded model supports; a request using one it does not fails before generating.
 
 ## Serving the browser backend's files
 

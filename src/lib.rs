@@ -13,6 +13,7 @@ mod llama_cpp;
 mod load;
 #[cfg(test)]
 mod test_model;
+mod thinking;
 // wllama is JavaScript and needs a browser, which other targets lack.
 #[cfg(target_arch = "wasm32")]
 mod wllama;

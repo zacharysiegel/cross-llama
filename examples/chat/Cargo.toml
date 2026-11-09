@@ -1,3 +1,9 @@
+[workspace]
+members = [
+    ".",
+    "xtask",
+]
+
 [package]
 name = "cross-llama-chat"
 version = "0.1.0"
@@ -6,19 +12,69 @@ description = "A single-prompt chat that runs a local language model through cro
 license = "MIT"
 publish = false
 
+[lib]
+crate-type = [
+    "cdylib",
+    "rlib",
+]
+
+[[bin]]
+name = "cross-llama-chat"
+path = "src/main.rs"
+required-features = ["ssr"]
+
+[[bin]]
+name = "terminal"
+required-features = ["terminal"]
+
+[features]
+# The web client, which cargo-leptos compiles to wasm32.
+hydrate = [
+    "leptos/hydrate",
+    "dep:leptos",
+    "dep:cross-llama",
+    "dep:console_error_panic_hook",
+    "dep:wasm-bindgen",
+]
+# The web server runs no model, so it leaves out cross-llama, whose llama.cpp build needs CMake and a C++ compiler.
+ssr = [
+    "leptos/ssr",
+    "dep:leptos",
+    "dep:leptos_axum",
+    "dep:any_spawner",
+    "dep:axum",
+    "dep:tokio",
+    "dep:tower",
+    "dep:tower-http",
+]
+terminal = [
+    "dep:cross-llama",
+    "dep:futures",
+]
+
 [dependencies]
-cross-llama = { path = "../.." }
 minimer = "2.2.*"
+cross-llama = { path = "../..", optional = true }
+leptos = { version = "0.8.*", optional = true }
+console_error_panic_hook = { version = "0.1.*", optional = true }
+wasm-bindgen = { version = "0.2.*", optional = true }
+leptos_axum = { version = "0.8.*", optional = true }
+any_spawner = { version = "0.3.*", features = ["tokio"], optional = true }
+axum = { version = "0.8.*", optional = true }
+tokio = { version = "1.54.*", features = ["macros", "net", "rt"], optional = true }
+tower = { version = "0.5.*", features = ["util"], optional = true }
+tower-http = { version = "0.6.*", features = ["fs"], optional = true }
+futures = { version = "0.3.*", default-features = false, features = ["std", "executor"], optional = true }
 
-# The terminal client reads the local filesystem and a terminal, and the server binds a socket, neither of which wasm32 has.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-axum = "0.8.*"
-futures = { version = "0.3.*", default-features = false, features = ["std", "executor"] }
-tokio = { version = "1.54.*", features = ["net", "rt"] }
-tower = { version = "0.5.*", features = ["util"] }
-tower-http = { version = "0.6.*", features = ["fs"] }
-
-# The web client runs in a browser page, which other targets lack.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-console_error_panic_hook = "0.1.*"
-leptos = { version = "0.8.*", features = ["csr"] }
+[package.metadata.leptos]
+output-name = "cross-llama-chat"
+site-root = "target/site"
+site-pkg-dir = "pkg"
+style-file = "style.css"
+site-addr = "127.0.0.1:4417"
+reload-port = 4418
+bin-target = "cross-llama-chat"
+bin-features = ["ssr"]
+bin-default-features = false
+lib-features = ["hydrate"]
+lib-default-features = false
