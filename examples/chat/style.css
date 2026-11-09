@@ -1,0 +1,60 @@
+body {
+    margin: 0;
+    font-family: system-ui, sans-serif;
+    line-height: 1.5;
+    color: #1d1d1f;
+    background: #fafafa;
+}
+
+main {
+    max-width: 44rem;
+    margin: 0 auto;
+    padding: 2rem 1rem;
+}
+
+.explanation,
+.status {
+    color: #5c5c60;
+}
+
+.status progress {
+    width: 100%;
+}
+
+.error {
+    color: #b00020;
+}
+
+form {
+    display: flex;
+    gap: 0.5rem;
+    margin: 1.5rem 0;
+}
+
+input {
+    flex: 1;
+    padding: 0.5rem;
+    font: inherit;
+    border: 1px solid #8e8e93;
+}
+
+button {
+    padding: 0.5rem 1rem;
+    font: inherit;
+    border: 1px solid #1d1d1f;
+    background: #1d1d1f;
+    color: #fafafa;
+}
+
+button:disabled {
+    border-color: #8e8e93;
+    background: #8e8e93;
+}
+
+.prompt {
+    font-weight: 600;
+}
+
+.reply {
+    white-space: pre-wrap;
+}
