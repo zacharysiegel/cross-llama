@@ -497,11 +497,11 @@ impl<'model> GenerationSession<'model> {
             self.prompt_cache.decode(&mut self.context, &mut self.batch, &[token])?;
             generated_token_count += 1;
 
-            monitor.report(create_progress(generated_token_count, reply_text.text_so_far()))?;
+            monitor.report(create_progress(generated_token_count, reply_text.complete_text()))?;
         };
 
         Ok(Reply {
-            text: reply_text.into_text(),
+            text: reply_text.complete_text(),
             generated_token_count,
             ending,
         })

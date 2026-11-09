@@ -14,14 +14,10 @@ impl ReplyText {
         self.bytes.extend_from_slice(piece);
     }
 
-    /// Leaves out a trailing incomplete character, which the next token may complete.
-    pub fn text_so_far(&self) -> String {
+    /// Leaves out a trailing incomplete character, which a next token may complete and a reply's last token may leave.
+    pub fn complete_text(&self) -> String {
         let complete_length: usize = length_without_incomplete_trailing_character(&self.bytes);
         String::from_utf8_lossy(&self.bytes[..complete_length]).into_owned()
-    }
-
-    pub fn into_text(self) -> String {
-        String::from_utf8_lossy(&self.bytes).into_owned()
     }
 }
 
@@ -49,19 +45,19 @@ mod tests {
     use super::ReplyText;
 
     #[test]
-    fn text_so_far_leaves_out_incomplete_trailing_character() {
+    fn complete_text_leaves_out_incomplete_trailing_character() {
         let mut reply_text: ReplyText = ReplyText::new();
         reply_text.push_piece("olá".as_bytes());
         reply_text.push_piece(&"ã".as_bytes()[..1]);
 
-        assert_eq!(reply_text.text_so_far(), "olá");
+        assert_eq!(reply_text.complete_text(), "olá");
     }
 
     #[test]
-    fn text_so_far_keeps_invalid_bytes_before_later_text() {
+    fn complete_text_keeps_invalid_bytes_before_later_text() {
         let mut reply_text: ReplyText = ReplyText::new();
         reply_text.push_piece(&[b'a', 0xFF, b'b']);
 
-        assert_eq!(reply_text.text_so_far(), "a\u{FFFD}b");
+        assert_eq!(reply_text.complete_text(), "a\u{FFFD}b");
     }
 }
