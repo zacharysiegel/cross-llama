@@ -8,7 +8,7 @@ repository = "https://github.com/zacharysiegel/cross-llama"
 readme = "README.md"
 keywords = ["llm", "llama", "gguf", "wasm", "inference"]
 categories = ["api-bindings", "wasm"]
-exclude = ["CLAUDE.md"]
+exclude = ["CLAUDE.md", "examples/chat"]
 
 [features]
 cuda = ["llama-cpp-2/cuda"]
