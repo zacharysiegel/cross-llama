@@ -2,7 +2,7 @@
 
 Runs a GGUF language model from Rust behind one async API: through llama.cpp on targets other than `wasm32`, and through wllama (llama.cpp compiled to WebAssembly) in the browser. Both format prompts with the model file's own Jinja chat template, and return a reasoning model's reasoning apart from its answer.
 
-[examples/chat/](./examples/chat/) is a chat demo with a terminal client for macOS and Linux and a web client, a Leptos app that `cargo xtask` builds and serves with cargo-leptos.
+[examples/chat/](./examples/chat/) is a chat demo with a terminal client for macOS and Linux and a web client, a Leptos app built and served with cargo-leptos.
 
 ## Example
 
