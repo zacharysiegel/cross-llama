@@ -19,7 +19,7 @@ function check_trunk_installed {
 
     if test -z "${trunk_path}"; then
         echo "The \`trunk\` program is required"
-        echo "  install: cargo install trunk --locked"
+        echo "  install: cargo +stable install trunk --locked"
         exit 1
     fi
 }
