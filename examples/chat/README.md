@@ -18,4 +18,4 @@ Reads one prompt per line from standard input until it ends, so prompts can also
 ./scripts/serve-web.sh
 ```
 
-Builds the Leptos client with [Trunk](https://trunkrs.dev) (`cargo install trunk --locked`), fetches wllama's files into `build/wllama/`, and serves the site, wllama's files and the model at http://127.0.0.1:4417/ with the cross-origin isolation headers wllama needs. An optional argument is another port. The page downloads the model into the browser's storage on its first visit and loads it from there afterwards.
+Builds the Leptos client with [Trunk](https://trunkrs.dev) (`cargo +stable install trunk --locked`), fetches wllama's files into `build/wllama/`, and serves the site, wllama's files and the model at http://127.0.0.1:4417/ with the cross-origin isolation headers wllama needs. An optional argument is another port. The page downloads the model into the browser's storage on its first visit and loads it from there afterwards.
