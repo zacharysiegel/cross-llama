@@ -4,7 +4,8 @@ fn main() -> std::process::ExitCode {
     match outcome {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("error: {error}");
+            // The message alone, without the backtrace that `Display` adds.
+            eprintln!("{}", error.message);
             std::process::ExitCode::FAILURE
         }
     }
