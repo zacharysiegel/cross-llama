@@ -24,22 +24,7 @@ function check_trunk_installed {
     fi
 }
 
-function fetch_wllama_unless_current {
-    local wanted_version
-    wanted_version=$(grep -E '^readonly WLLAMA_VERSION=' "${FETCH_WLLAMA_SCRIPT}" | cut -d'"' -f2)
-    local fetched_version
-    fetched_version=$(cat "${WLLAMA_DIRECTORY}/VERSION" 2>/dev/null || true)
-
-    if test "${fetched_version}" = "${wanted_version}"; then
-        return 0
-    fi
-
-    rm -rf "${WLLAMA_DIRECTORY}"
-    "${FETCH_WLLAMA_SCRIPT}" "${WLLAMA_DIRECTORY}"
-    echo "${wanted_version}" > "${WLLAMA_DIRECTORY}/VERSION"
-}
-
 check_trunk_installed
-fetch_wllama_unless_current
+"${FETCH_WLLAMA_SCRIPT}" "${WLLAMA_DIRECTORY}"
 trunk build --release
 exec cargo run --quiet --release --bin server -- "$@"
